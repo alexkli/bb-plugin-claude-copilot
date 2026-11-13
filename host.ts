@@ -8,8 +8,8 @@
 // 3. Delegates resolveNativeRoots to the built-in host entry.
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { existsSync, readdirSync, statSync } from "node:fs";
-import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { appendFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { delimiter, dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -23,7 +23,14 @@ import {
   type ProviderBridgeContext,
   type ProviderBridgeEntry,
 } from "@get-bb/plugin-sdk/provider-bridge";
-import { hostContract, type LoginStatus, type ProxyStatus } from "./contract.js";
+import {
+  catalogDefaultsSchema,
+  hostContract,
+  type ApiResponse,
+  type CatalogDefaults,
+  type LoginStatus,
+  type ProxyStatus,
+} from "./contract.js";
 
 // ---------------------------------------------------------------------------
 // Locating bb's built-in Claude Code host artifact
@@ -82,27 +89,46 @@ function flushEvent(event: "close" | "sigterm" | "sigint") {
   else realBridge.onSigint?.();
 }
 
-// Catalog defaults for this provider. The built-in bridge defaults every
-// model to "high"; rewrite the catalogs it reports (model objects carrying
-// defaultReasoningEffort + supportedReasoningEfforts) on their way to bb.
-const DEFAULT_REASONING = "medium";
-// Default model. Claude Code's own "default" entry resolves to its account
-// default (Sonnet 5), not ANTHROPIC_MODEL, so mark ours in the catalog instead.
-const DEFAULT_MODEL = "claude-opus-5-5";
+// Catalog defaults for this provider (Settings: default model / reasoning).
+// The built-in bridge defaults every model to "high" reasoning and marks
+// Claude Code's own "default" entry (its account default, not ANTHROPIC_MODEL)
+// as the default model. Rewrite the catalogs it reports on their way to bb.
+// The host entry writes the current choice to host-data/catalog-defaults.json.
+const FALLBACK_DEFAULTS: CatalogDefaults = { defaultModel: "claude-opus-5-5", defaultReasoning: "medium" };
+const CATALOG_DEFAULTS_FILE = "catalog-defaults.json";
+let bridgeDataDir: string | null = null;
+let cachedDefaults: { value: CatalogDefaults; at: number } | null = null;
 
-function preferDefaultReasoning(value: unknown): void {
+function catalogDefaults(): CatalogDefaults {
+  if (cachedDefaults && Date.now() - cachedDefaults.at < 5000) return cachedDefaults.value;
+  let value = FALLBACK_DEFAULTS;
+  if (bridgeDataDir) {
+    try {
+      const file = join(dirname(bridgeDataDir), "host-data", CATALOG_DEFAULTS_FILE);
+      const parsed = catalogDefaultsSchema.safeParse(JSON.parse(readFileSync(file, "utf8")));
+      if (parsed.success) value = parsed.data;
+    } catch {
+      // not written yet: keep the fallback
+    }
+  }
+  cachedDefaults = { value, at: Date.now() };
+  return value;
+}
+
+function applyCatalogDefaults(value: unknown, defaults: CatalogDefaults): void {
   if (Array.isArray(value)) {
     const isCatalog = value.some(
-      (m) => m && typeof m === "object" && "isDefault" in m && (m as { id?: unknown }).id === DEFAULT_MODEL,
+      (m) => m && typeof m === "object" && "isDefault" in m && (m as { id?: unknown }).id === defaults.defaultModel,
     );
     if (isCatalog) {
       for (const m of value) {
         if (m && typeof m === "object" && "isDefault" in m) {
-          (m as { isDefault: boolean }).isDefault = (m as { id?: unknown }).id === DEFAULT_MODEL;
+          (m as { isDefault: boolean }).isDefault = (m as { id?: unknown }).id === defaults.defaultModel;
         }
       }
     }
-    return value.forEach(preferDefaultReasoning);
+    for (const item of value) applyCatalogDefaults(item, defaults);
+    return;
   }
   if (!value || typeof value !== "object") return;
   const record = value as Record<string, unknown>;
@@ -110,18 +136,18 @@ function preferDefaultReasoning(value: unknown): void {
   if (
     typeof record.defaultReasoningEffort === "string" &&
     Array.isArray(supported) &&
-    supported.some((s) => (s as { reasoningEffort?: unknown })?.reasoningEffort === DEFAULT_REASONING)
+    supported.some((s) => (s as { reasoningEffort?: unknown })?.reasoningEffort === defaults.defaultReasoning)
   ) {
-    record.defaultReasoningEffort = DEFAULT_REASONING;
+    record.defaultReasoningEffort = defaults.defaultReasoning;
   }
-  for (const child of Object.values(record)) preferDefaultReasoning(child);
+  for (const child of Object.values(record)) applyCatalogDefaults(child, defaults);
 }
 
 function rewriteLine(line: string): string {
   if (!line.includes('"defaultReasoningEffort"') && !line.includes('"isDefault"')) return line;
   try {
     const message = JSON.parse(line) as unknown;
-    preferDefaultReasoning(message);
+    applyCatalogDefaults(message, catalogDefaults());
     return JSON.stringify(message);
   } catch {
     return line;
@@ -158,6 +184,7 @@ function patchStdout(): void {
 
 export const experimental_providerBridge = experimental_defineProviderBridge({
   start(context: ProviderBridgeContext) {
+    bridgeDataDir = context.dataDir;
     patchStdout();
     loadBuiltin(context.dataDir).then(
       (mod) => {
@@ -283,10 +310,8 @@ async function healthy(state: ProxyState): Promise<boolean> {
   }
 }
 
-async function ensureProxy(pluginDir: string, context: ExperimentalHostRpcContext): Promise<ProxyStatus> {
-  const dataDir = context.experimental_paths.dataDir;
-  const { home, state } = await prepareHome(dataDir);
-  const status = (running: boolean): ProxyStatus => ({
+function statusFor(home: string, state: ProxyState, running: boolean): ProxyStatus {
+  return {
     running,
     signedIn: isSignedIn(home),
     port: state.port,
@@ -294,10 +319,31 @@ async function ensureProxy(pluginDir: string, context: ExperimentalHostRpcContex
     claudePath: findClaude(),
     home,
     error: lastError,
-  });
-  if (!isSignedIn(home)) return status(false);
-  if (child && child.exitCode === null) return status(await healthy(state));
-  if (await healthy(state)) return status(true); // e.g. survived a worker restart
+  };
+}
+
+const PID_FILE = "copilot-api.pid";
+
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function ensureProxy(
+  pluginDir: string,
+  catalog: CatalogDefaults,
+  context: ExperimentalHostRpcContext,
+): Promise<ProxyStatus> {
+  const dataDir = context.experimental_paths.dataDir;
+  const { home, state } = await prepareHome(dataDir);
+  await writeFile(join(dataDir, CATALOG_DEFAULTS_FILE), JSON.stringify(catalog));
+  if (!isSignedIn(home)) return statusFor(home, state, false);
+  if (child && child.exitCode === null) return statusFor(home, state, await healthy(state));
+  if (await healthy(state)) return statusFor(home, state, true); // e.g. survived a worker restart
 
   const log = join(dataDir, "copilot-api.log");
   lastError = null;
@@ -306,6 +352,7 @@ async function ensureProxy(pluginDir: string, context: ExperimentalHostRpcContex
     stdio: ["ignore", "pipe", "pipe"],
   });
   child = proc;
+  if (proc.pid) await writeFile(join(dataDir, PID_FILE), String(proc.pid));
   lease?.dispose();
   lease = context.experimental_retainWorker();
   const write = (chunk: Buffer) => void appendFile(log, chunk).catch(() => {});
@@ -316,21 +363,116 @@ async function ensureProxy(pluginDir: string, context: ExperimentalHostRpcContex
       child = null;
       lease?.dispose();
       lease = null;
+      void rm(join(dataDir, PID_FILE), { force: true });
       if (code !== 0 && signal === null) lastError = `copilot-api exited with code ${code}; see ${log}`;
     }
   });
   for (let i = 0; i < 16; i++) {
-    if (await healthy(state)) return status(true);
+    if (await healthy(state)) return statusFor(home, state, true);
     if (proc.exitCode !== null) break;
     await new Promise((r) => setTimeout(r, 250));
   }
-  return status(await healthy(state));
+  return statusFor(home, state, await healthy(state));
 }
 
-function stopProxy(): boolean {
-  if (!child) return false;
-  child.kill("SIGTERM");
-  return true;
+async function proxyStatus(context: ExperimentalHostRpcContext): Promise<ProxyStatus> {
+  const { home, state } = await prepareHome(context.experimental_paths.dataDir);
+  return statusFor(home, state, await healthy(state));
+}
+
+/** Stop our copilot-api: the child we own, or one a previous worker left running. */
+async function stopProxy(dataDir: string): Promise<boolean> {
+  if (child) {
+    child.kill("SIGTERM");
+    return true;
+  }
+  const pid = Number((await readFile(join(dataDir, PID_FILE), "utf8").catch(() => "")).trim());
+  if (pid > 0 && pidAlive(pid)) {
+    process.kill(pid, "SIGTERM");
+    await rm(join(dataDir, PID_FILE), { force: true });
+    return true;
+  }
+  return false;
+}
+
+/** Read-only copilot-api paths the dashboard and usage card may GET. */
+const API_PATHS = /^\/(usage-viewer|(usage|token-usage|models|v1\/models)(\/[A-Za-z0-9_.-]+)*)(\?[^#\s]*)?$/;
+
+/** GET a path on the private copilot-api with the gateway key. */
+async function apiRequest(path: string, context: ExperimentalHostRpcContext): Promise<ApiResponse> {
+  const segments = (path.split("?")[0] ?? "").split("/");
+  if (!API_PATHS.test(path) || segments.some((s) => s === "." || s === "..")) {
+    return { status: 400, contentType: "text/plain", body: "Path not allowed" };
+  }
+  const { state } = await prepareHome(context.experimental_paths.dataDir);
+  try {
+    const res = await fetch(`http://127.0.0.1:${state.port}${path}`, {
+      headers: { authorization: `Bearer ${state.apiKey}`, accept: "application/json, text/html" },
+      signal: AbortSignal.timeout(25_000),
+    });
+    const body = await res.text();
+    return {
+      status: res.status,
+      contentType: res.headers.get("content-type") ?? "application/octet-stream",
+      body: body.length > 7_000_000 ? body.slice(0, 7_000_000) : body,
+    };
+  } catch (error) {
+    return { status: 502, contentType: "application/json", body: JSON.stringify({ error: `copilot-api is not reachable: ${String(error)}` }) };
+  }
+}
+
+const MANAGED_AUTH_KEYS = ["apiKeys", "adminApiKey"];
+
+/** config.json for editing: the plugin-managed auth keys are left out. */
+async function getConfig(context: ExperimentalHostRpcContext): Promise<string> {
+  const { home } = await prepareHome(context.experimental_paths.dataDir);
+  const config = (await readJson<Record<string, unknown>>(join(home, "config.json"))) ?? {};
+  const auth = { ...((config.auth ?? {}) as Record<string, unknown>) };
+  for (const key of MANAGED_AUTH_KEYS) delete auth[key];
+  if (Object.keys(auth).length === 0) delete config.auth;
+  else config.auth = auth;
+  return JSON.stringify(config, null, 2);
+}
+
+async function setConfig(json: string, context: ExperimentalHostRpcContext): Promise<{ reloaded: boolean; message: string | null }> {
+  let next: unknown;
+  try {
+    next = JSON.parse(json);
+  } catch (error) {
+    throw new Error(`Not valid JSON: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (!next || typeof next !== "object" || Array.isArray(next)) throw new Error("config.json must be a JSON object.");
+  const config = next as Record<string, unknown>;
+  const auth = { ...((config.auth ?? {}) as Record<string, unknown>) };
+  for (const key of MANAGED_AUTH_KEYS) delete auth[key]; // re-added by prepareHome
+  config.auth = auth;
+  const { home, state } = await prepareHome(context.experimental_paths.dataDir);
+  await writeFile(join(home, "config.json"), JSON.stringify(config, null, 2), { mode: 0o600 });
+  await prepareHome(context.experimental_paths.dataDir); // restore the managed keys
+  if (!(await healthy(state))) return { reloaded: false, message: "Saved. copilot-api is not running; it reads the file when it starts." };
+  try {
+    const res = await fetch(`http://127.0.0.1:${state.port}/admin/config/reload`, {
+      method: "POST",
+      headers: { "x-api-key": state.adminKey },
+      signal: AbortSignal.timeout(30_000),
+    });
+    return res.ok
+      ? { reloaded: true, message: "Saved and reloaded." }
+      : { reloaded: false, message: `Saved, but reload failed (HTTP ${res.status}): ${(await res.text()).slice(0, 300)}` };
+  } catch (error) {
+    return { reloaded: false, message: `Saved, but reload failed: ${String(error)}` };
+  }
+}
+
+async function signOut(context: ExperimentalHostRpcContext): Promise<boolean> {
+  const dataDir = context.experimental_paths.dataDir;
+  const home = join(dataDir, "copilot-api");
+  await stopProxy(dataDir);
+  const token = join(home, "github_token");
+  const existed = existsSync(token);
+  await rm(token, { force: true });
+  login = { state: "idle", userCode: null, url: null, message: null };
+  return existed;
 }
 
 // ---------------------------------------------------------------------------
@@ -382,13 +524,18 @@ export default experimental_defineHostEntry({
       if (!handler) return { skills: [], commands: [] };
       return (await handler({ ...input, providerId: "claude-code" }, context)) as never;
     },
-    ensureProxy: ({ pluginDir }, context) => ensureProxy(pluginDir, context),
-    stopProxy: async () => ({ stopped: stopProxy() }),
+    ensureProxy: ({ pluginDir, catalog }, context) => ensureProxy(pluginDir, catalog, context),
+    proxyStatus: (_input, context) => proxyStatus(context),
+    stopProxy: async (_input, context) => ({ stopped: await stopProxy(context.experimental_paths.dataDir) }),
     startLogin: ({ pluginDir }, context) => startLogin(pluginDir, context),
     loginStatus: async () => login,
+    signOut: async (_input, context) => ({ signedOut: await signOut(context) }),
+    apiRequest: ({ path }, context) => apiRequest(path, context),
+    getConfig: async (_input, context) => ({ json: await getConfig(context) }),
+    setConfig: ({ json }, context) => setConfig(json, context),
   },
   dispose: () => {
-    stopProxy();
+    child?.kill("SIGTERM");
     loginProc?.kill("SIGTERM");
   },
 });

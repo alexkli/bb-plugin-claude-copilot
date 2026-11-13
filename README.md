@@ -31,17 +31,38 @@ Status: experimental prototype.
   `experimental_contributeEnvHealth` reports the provider healthy while the
   proxy runs, so no claude.ai login is needed.
 - **Catalog defaults.** The bridge's model catalog is adjusted on its way to
-  bb: Opus 5.5 is the default model and medium the default reasoning level.
+  bb so the configured default model and reasoning level (Opus 5.5, medium)
+  are preselected. Claude Code's own "default" entry ignores `ANTHROPIC_MODEL`.
+- **Idle stop.** copilot-api stops when no Claude Code (Copilot) thread has
+  been running for the configured minutes (default 30); the next turn starts
+  it again through the env resolver.
 - **Plan mode** and the rest of Claude Code's bb features come from the
   reused declaration and bridge.
 - **Icon.** The Claude mark with the GitHub Copilot glyph in the bottom-right
   corner (`app.tsx`; `icons/claude-copilot.svg` is the monochrome fallback).
+
+## In bb
+
+- **Settings → Claude Copilot**: bb's Claude Code options for this provider,
+  plus default model / reasoning, the Opus/Sonnet/Haiku model mapping and the
+  idle-stop minutes. The **GitHub Copilot** section signs in with a GitHub
+  device code, shows the account and copilot-api state (start / stop /
+  restart), and edits copilot-api's `config.json` (saving reloads it; the
+  plugin-managed gateway keys are hidden and preserved).
+- **Copilot usage** page and sidebar-footer button: copilot-api's usage
+  dashboard for this proxy, in a sandboxed iframe whose data requests go
+  through the plugin (`/viewer`, `/proxy` routes → host entry), so it works
+  from bb on a phone too.
+- **Provider usage card**: the Copilot premium-request quota (percent used,
+  reset date). Background polls never start an idle copilot-api; they show
+  the last value.
 
 ## Commands
 
 ```
 bb claude-copilot status   Show the private copilot-api state
 bb claude-copilot login    Sign in to GitHub Copilot (device code)
+bb claude-copilot logout   Sign out of GitHub Copilot
 bb claude-copilot start    Start copilot-api
 bb claude-copilot stop     Stop copilot-api
 ```

@@ -19,6 +19,7 @@
   "dependencies": {
     "@get-bb/plugin-sdk": "0.6.132",
     "@jeffreycao/copilot-api": "2.9.3",
+    "@radix-ui/react-slot": "^1.5.0",
     "zod": "^4.6.5"
   },
   "devDependencies": {
@@ -26,8 +27,11 @@
     "@types/node": "^22.0.0",
     "@types/react": "^19.3.0",
     "better-sqlite3": "^12.0.0",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
     "cron-parser": "^5.5.0",
     "hono": "^4.11.9",
+    "tailwind-merge": "^3.7.0",
     "typescript": "^5.7.0"
   },
   "description": "Claude Code through GitHub Copilot, as its own bb provider, with a private copilot-api."
