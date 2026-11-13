@@ -30,9 +30,17 @@ Status: experimental prototype.
   ids, the `DISABLE_*` flags and plain `claude` as `BB_CLAUDE_CODE_EXECUTABLE`.
   `experimental_contributeEnvHealth` reports the provider healthy while the
   proxy runs, so no claude.ai login is needed.
-- **Catalog defaults.** The bridge's model catalog is adjusted on its way to
-  bb so the configured default model and reasoning level (Opus 5.5, medium)
-  are preselected. Claude Code's own "default" entry ignores `ANTHROPIC_MODEL`.
+- **Model catalog.** The bridge's model catalog is adjusted on its way to
+  bb: every Copilot chat model is added (GPT, Gemini, Grok, ... run through
+  copilot-api's Anthropic Messages translation, using its `my-claude-<id>`
+  naming, with `[1m]` for models with a 1M context window), and the
+  configured default model and reasoning level are preselected. The list is
+  cached from copilot-api's `/v1/models` (`copilot-models.json`).
+- **1M context.** Claude models get 1M through bb's normal Claude Code
+  handling (the "Disable 1M context" option turns it off). For other models
+  `[1m]` tells Claude Code the window is large; `CLAUDE_CODE_AUTO_COMPACT_WINDOW`
+  is set to the smallest input limit among those models so it compacts
+  before Copilot rejects a request.
 - **Idle stop.** copilot-api stops when no Claude Code (Copilot) thread has
   been running for the configured minutes (default 30); the next turn starts
   it again through the env resolver.
@@ -43,18 +51,26 @@ Status: experimental prototype.
 
 ## In bb
 
-- **Settings → Claude Copilot**: bb's Claude Code options for this provider,
-  plus default model / reasoning, the Opus/Sonnet/Haiku model mapping and the
-  idle-stop minutes. The **GitHub Copilot** section signs in with a GitHub
-  device code, shows the account and copilot-api state (start / stop /
-  restart), and edits copilot-api's `config.json` (saving reloads it; the
+- **Settings → Claude Copilot**: one section, owned by the plugin (not bb's
+  declarative form) so it can be ordered and use live data: GitHub sign-in
+  (device code), account and copilot-api state (start / stop / restart);
+  model dropdowns from Copilot's model list (default model, default
+  reasoning, Opus / Sonnet / Haiku mapping) and idle-stop minutes; bb's
+  Claude Code options for this provider, rendered from the built-in's own
+  setting descriptors; copilot-api's `config.json` (saving reloads it; the
   plugin-managed gateway keys are hidden and preserved).
 - **Copilot usage** page and sidebar-footer button: copilot-api's usage
-  dashboard for this proxy, in a sandboxed iframe whose data requests go
-  through the plugin (`/viewer`, `/proxy` routes → host entry), so it works
-  from bb on a phone too.
+  dashboard in a sandboxed iframe whose data requests go through the plugin
+  (`/viewer`, `/proxy` routes -> host entry), so it works from bb on a phone
+  too. Tabs at the top switch between local copilot-api instances: this
+  plugin's (default) and any other copilot-api home with a usage database
+  (found from running copilot-api processes and the default
+  `~/.local/share/copilot-api`). Token usage is stored per instance in its
+  `copilot-api.sqlite`; other instances are read from a read-only snapshot
+  (`VACUUM INTO`) with copilot-api's own query code (`usage-reader.mjs`).
+  Subscriptions/quota data comes from GitHub and is the same for all.
 - **Provider usage card**: the Copilot premium-request quota (percent used,
-  reset date). Background polls never start an idle copilot-api; they show
+  used/entitled counts in the label, reset date). Background polls never start an idle copilot-api; they show
   the last value.
 
 ## Commands

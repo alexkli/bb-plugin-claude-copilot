@@ -7,10 +7,11 @@
 //    claude-copilot provider.
 // 3. Delegates resolveNativeRoots to the built-in host entry.
 import { spawn, type ChildProcess } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { appendFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
+import { homedir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
@@ -24,12 +25,17 @@ import {
   type ProviderBridgeEntry,
 } from "@get-bb/plugin-sdk/provider-bridge";
 import {
-  catalogDefaultsSchema,
+  catalogFileSchema,
+  copilotModelSchema,
   hostContract,
+  REASONING_LEVELS,
   type ApiResponse,
-  type CatalogDefaults,
+  type CatalogFile,
+  type CopilotModel,
+  type Instance,
   type LoginStatus,
   type ProxyStatus,
+  type ReasoningLevel,
 } from "./contract.js";
 
 // ---------------------------------------------------------------------------
@@ -89,45 +95,93 @@ function flushEvent(event: "close" | "sigterm" | "sigint") {
   else realBridge.onSigint?.();
 }
 
-// Catalog defaults for this provider (Settings: default model / reasoning).
-// The built-in bridge defaults every model to "high" reasoning and marks
-// Claude Code's own "default" entry (its account default, not ANTHROPIC_MODEL)
-// as the default model. Rewrite the catalogs it reports on their way to bb.
-// The host entry writes the current choice to host-data/catalog-defaults.json.
-const FALLBACK_DEFAULTS: CatalogDefaults = { defaultModel: "claude-opus-5-5", defaultReasoning: "medium" };
-const CATALOG_DEFAULTS_FILE = "catalog-defaults.json";
+// Model catalog for this provider. The built-in bridge reports Claude Code's
+// own catalog: only Anthropic models, "high" as every model's default
+// reasoning, and Claude Code's "default" entry (its account default, not
+// ANTHROPIC_MODEL) as the default model. On the way to bb we add copilot-api's
+// other chat models and apply the configured defaults. The host entry keeps
+// host-data/catalog.json current (settings + copilot-api's model list).
+const FALLBACK_CATALOG: CatalogFile = { defaultModel: "claude-opus-5-5", defaultReasoning: "medium", models: [] };
+const CATALOG_FILE = "catalog.json";
 let bridgeDataDir: string | null = null;
-let cachedDefaults: { value: CatalogDefaults; at: number } | null = null;
+let cachedCatalog: { value: CatalogFile; at: number } | null = null;
 
-function catalogDefaults(): CatalogDefaults {
-  if (cachedDefaults && Date.now() - cachedDefaults.at < 5000) return cachedDefaults.value;
-  let value = FALLBACK_DEFAULTS;
+function catalogFile(): CatalogFile {
+  if (cachedCatalog && Date.now() - cachedCatalog.at < 5000) return cachedCatalog.value;
+  let value = FALLBACK_CATALOG;
   if (bridgeDataDir) {
     try {
-      const file = join(dirname(bridgeDataDir), "host-data", CATALOG_DEFAULTS_FILE);
-      const parsed = catalogDefaultsSchema.safeParse(JSON.parse(readFileSync(file, "utf8")));
+      const file = join(dirname(bridgeDataDir), "host-data", CATALOG_FILE);
+      const parsed = catalogFileSchema.safeParse(JSON.parse(readFileSync(file, "utf8")));
       if (parsed.success) value = parsed.data;
     } catch {
       // not written yet: keep the fallback
     }
   }
-  cachedDefaults = { value, at: Date.now() };
+  cachedCatalog = { value, at: Date.now() };
   return value;
 }
 
-function applyCatalogDefaults(value: unknown, defaults: CatalogDefaults): void {
+const EFFORT_DESCRIPTIONS: Record<ReasoningLevel, string> = {
+  low: "Low reasoning effort",
+  medium: "Medium reasoning effort",
+  high: "High reasoning effort",
+  xhigh: "Extra high reasoning effort",
+  max: "Maximum reasoning effort",
+};
+
+function formatTokens(tokens: number): string {
+  return tokens >= 1_000_000 ? `${Math.round(tokens / 100_000) / 10}M` : `${Math.round(tokens / 1000)}K`;
+}
+
+function catalogEntry(model: CopilotModel, catalog: CatalogFile): Record<string, unknown> {
+  const efforts = model.reasoningEfforts;
+  const defaultEffort = efforts.includes(catalog.defaultReasoning)
+    ? catalog.defaultReasoning
+    : efforts.includes("medium")
+      ? "medium"
+      : (efforts[0] ?? "low"); // bb requires a value; the built-in uses "low" for models without efforts
+  const description = [
+    model.displayName,
+    model.vendor,
+    model.contextWindow ? `${formatTokens(model.contextWindow)} context` : null,
+    "via GitHub Copilot",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  return {
+    id: model.id,
+    model: model.id,
+    displayName: model.displayName,
+    description,
+    reasoningDiscovery: "known",
+    supportedReasoningEfforts: efforts.map((effort) => ({ reasoningEffort: effort, description: EFFORT_DESCRIPTIONS[effort] })),
+    defaultReasoningEffort: defaultEffort,
+    isDefault: false,
+  };
+}
+
+function isCatalogEntry(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && "isDefault" in value && "supportedReasoningEfforts" in value;
+}
+
+/** Strip copilot-api's Claude compatibility prefix/suffix to compare model ids. */
+function baseModelId(id: string): string {
+  return id.replace(/\[1m\]$/i, "").replace(/(^|\/)my-claude-/, "$1");
+}
+
+function adjustCatalog(value: unknown, catalog: CatalogFile, key: string | null): void {
   if (Array.isArray(value)) {
-    const isCatalog = value.some(
-      (m) => m && typeof m === "object" && "isDefault" in m && (m as { id?: unknown }).id === defaults.defaultModel,
-    );
-    if (isCatalog) {
-      for (const m of value) {
-        if (m && typeof m === "object" && "isDefault" in m) {
-          (m as { isDefault: boolean }).isDefault = (m as { id?: unknown }).id === defaults.defaultModel;
-        }
+    if (key === "models" && value.some(isCatalogEntry)) {
+      const known = new Set(value.filter(isCatalogEntry).map((m) => baseModelId(String(m.id))));
+      for (const model of catalog.models) {
+        if (!known.has(baseModelId(model.id))) value.push(catalogEntry(model, catalog));
+      }
+      if (value.some((m) => isCatalogEntry(m) && m.id === catalog.defaultModel)) {
+        for (const m of value) if (isCatalogEntry(m)) m.isDefault = m.id === catalog.defaultModel;
       }
     }
-    for (const item of value) applyCatalogDefaults(item, defaults);
+    for (const item of value) adjustCatalog(item, catalog, null);
     return;
   }
   if (!value || typeof value !== "object") return;
@@ -136,18 +190,18 @@ function applyCatalogDefaults(value: unknown, defaults: CatalogDefaults): void {
   if (
     typeof record.defaultReasoningEffort === "string" &&
     Array.isArray(supported) &&
-    supported.some((s) => (s as { reasoningEffort?: unknown })?.reasoningEffort === defaults.defaultReasoning)
+    supported.some((s) => (s as { reasoningEffort?: unknown })?.reasoningEffort === catalog.defaultReasoning)
   ) {
-    record.defaultReasoningEffort = defaults.defaultReasoning;
+    record.defaultReasoningEffort = catalog.defaultReasoning;
   }
-  for (const child of Object.values(record)) applyCatalogDefaults(child, defaults);
+  for (const [childKey, child] of Object.entries(record)) adjustCatalog(child, catalog, childKey);
 }
 
 function rewriteLine(line: string): string {
   if (!line.includes('"defaultReasoningEffort"') && !line.includes('"isDefault"')) return line;
   try {
     const message = JSON.parse(line) as unknown;
-    applyCatalogDefaults(message, catalogDefaults());
+    adjustCatalog(message, catalogFile(), null);
     return JSON.stringify(message);
   } catch {
     return line;
@@ -333,17 +387,97 @@ function pidAlive(pid: number): boolean {
   }
 }
 
+// -- Copilot model list ------------------------------------------------------------
+
+const MODELS_FILE = "copilot-models.json";
+const MODELS_MAX_AGE_MS = 10 * 60_000;
+type ModelsCache = { fetchedAt: number; models: CopilotModel[] };
+
+/** Copilot chat models from copilot-api's /v1/models, in Claude Code's id convention. */
+function toCopilotModels(body: unknown): CopilotModel[] {
+  const data = (body as { data?: unknown[] } | null)?.data;
+  if (!Array.isArray(data)) return [];
+  const models: CopilotModel[] = [];
+  for (const raw of data) {
+    if (!raw || typeof raw !== "object") continue;
+    const m = raw as Record<string, unknown>;
+    const caps = (m.capabilities ?? {}) as Record<string, unknown>;
+    const upstreamId = typeof m.id === "string" ? m.id : null;
+    if (!upstreamId || upstreamId.includes("/")) continue; // provider-prefixed (image) models
+    if ((caps.type ?? m.type) !== "chat" && caps.type !== "chat") continue;
+    if (m.model_picker_enabled === false) continue;
+    if (!Array.isArray(m.supported_endpoints) || m.supported_endpoints.length === 0) continue;
+    const contextWindow = typeof m.context_window === "number" ? m.context_window : null;
+    const inputLimit = typeof m.input_limit === "number" ? m.input_limit : null;
+    const vendor = typeof m.vendor === "string" ? m.vendor : null;
+    const anthropic = vendor === "Anthropic" || upstreamId.startsWith("claude-");
+    // copilot-api's Claude Code convention: non-Claude names get a my-claude-
+    // prefix (copilot-api strips it again) and [1m] tells Claude Code the
+    // window is 1M; we add it only when the model really has 1M. Claude models
+    // keep their plain ids, like the entries Claude Code lists itself.
+    const id = anthropic
+      ? upstreamId
+      : `my-claude-${upstreamId}${contextWindow !== null && contextWindow >= 1_000_000 ? "[1m]" : ""}`;
+    const name = typeof m.display_name === "string" ? m.display_name : typeof m.name === "string" ? m.name : upstreamId;
+    const efforts = Array.isArray(m.reasoning_efforts) ? m.reasoning_efforts : [];
+    const parsed = copilotModelSchema.safeParse({
+      id,
+      upstreamId,
+      displayName: name.replace(/\s*\(github-copilot\)$/i, ""),
+      vendor,
+      contextWindow,
+      inputLimit,
+      reasoningEfforts: REASONING_LEVELS.filter((level) => efforts.includes(level)),
+    });
+    if (parsed.success) models.push(parsed.data);
+  }
+  return models;
+}
+
+async function readModelsCache(dataDir: string): Promise<ModelsCache | null> {
+  return await readJson<ModelsCache>(join(dataDir, MODELS_FILE));
+}
+
+/** Refresh the model cache from a running copilot-api when it is stale (or forced). */
+async function refreshModels(dataDir: string, state: ProxyState, force = false): Promise<CopilotModel[]> {
+  const cached = await readModelsCache(dataDir);
+  if (!force && cached && Date.now() - cached.fetchedAt < MODELS_MAX_AGE_MS) return cached.models;
+  try {
+    const res = await fetch(`http://127.0.0.1:${state.port}/v1/models`, {
+      headers: { authorization: `Bearer ${state.apiKey}` },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!res.ok) return cached?.models ?? [];
+    const models = toCopilotModels(await res.json());
+    if (models.length > 0) await writeFile(join(dataDir, MODELS_FILE), JSON.stringify({ fetchedAt: Date.now(), models }));
+    return models.length > 0 ? models : (cached?.models ?? []);
+  } catch {
+    return cached?.models ?? [];
+  }
+}
+
+async function writeCatalog(dataDir: string, defaults: Pick<CatalogFile, "defaultModel" | "defaultReasoning">, models: CopilotModel[]) {
+  const catalog: CatalogFile = { ...defaults, models };
+  await writeFile(join(dataDir, CATALOG_FILE), JSON.stringify(catalog));
+}
+
 async function ensureProxy(
   pluginDir: string,
-  catalog: CatalogDefaults,
+  defaults: Pick<CatalogFile, "defaultModel" | "defaultReasoning">,
   context: ExperimentalHostRpcContext,
 ): Promise<ProxyStatus> {
   const dataDir = context.experimental_paths.dataDir;
   const { home, state } = await prepareHome(dataDir);
-  await writeFile(join(dataDir, CATALOG_DEFAULTS_FILE), JSON.stringify(catalog));
+  const cachedModels = (await readModelsCache(dataDir))?.models ?? [];
+  await writeCatalog(dataDir, defaults, cachedModels);
   if (!isSignedIn(home)) return statusFor(home, state, false);
-  if (child && child.exitCode === null) return statusFor(home, state, await healthy(state));
-  if (await healthy(state)) return statusFor(home, state, true); // e.g. survived a worker restart
+  const afterStart = async (): Promise<ProxyStatus> => {
+    // Keep the catalog's model list fresh; never delay the caller for it.
+    void refreshModels(dataDir, state).then((models) => writeCatalog(dataDir, defaults, models)).catch(() => {});
+    return statusFor(home, state, true);
+  };
+  if (child && child.exitCode === null) return (await healthy(state)) ? afterStart() : statusFor(home, state, false);
+  if (await healthy(state)) return afterStart(); // e.g. survived a worker restart
 
   const log = join(dataDir, "copilot-api.log");
   lastError = null;
@@ -368,11 +502,19 @@ async function ensureProxy(
     }
   });
   for (let i = 0; i < 16; i++) {
-    if (await healthy(state)) return statusFor(home, state, true);
+    if (await healthy(state)) return afterStart();
     if (proc.exitCode !== null) break;
     await new Promise((r) => setTimeout(r, 250));
   }
-  return statusFor(home, state, await healthy(state));
+  return (await healthy(state)) ? afterStart() : statusFor(home, state, false);
+}
+
+/** Models for settings dropdowns: refreshed when copilot-api runs, else the cache. */
+async function listModels(context: ExperimentalHostRpcContext): Promise<CopilotModel[]> {
+  const dataDir = context.experimental_paths.dataDir;
+  const { state } = await prepareHome(dataDir);
+  if (await healthy(state)) return await refreshModels(dataDir, state);
+  return (await readModelsCache(dataDir))?.models ?? [];
 }
 
 async function proxyStatus(context: ExperimentalHostRpcContext): Promise<ProxyStatus> {
@@ -475,6 +617,160 @@ async function signOut(context: ExperimentalHostRpcContext): Promise<boolean> {
   return existed;
 }
 
+// -- Other local copilot-api instances (usage dashboard tabs) ---------------------
+
+const OWN_INSTANCE_ID = "plugin";
+const DB_FILE = "copilot-api.sqlite";
+
+function defaultHome(): string {
+  return join(homedir(), ".local", "share", "copilot-api");
+}
+
+function tildify(path: string): string {
+  const home = homedir();
+  return path.startsWith(home) ? `~${path.slice(home.length)}` : path;
+}
+
+function instanceId(home: string): string {
+  return createHash("sha256").update(home).digest("hex").slice(0, 12);
+}
+
+/** Running `copilot-api start` processes: their home and port. */
+async function runningCopilotApis(): Promise<{ home: string; port: number | null }[]> {
+  const found: { home: string; port: number | null }[] = [];
+  const parse = (args: string, env: string) => {
+    if (!/copilot-api/.test(args) || !/\sstart(\s|$)/.test(args)) return;
+    const apiHome = /--api-home[= ](\S+)/.exec(args)?.[1] ?? /(?:^|\s)COPILOT_API_HOME=(\S+)/.exec(env)?.[1] ?? defaultHome();
+    const port = Number(/(?:--port|-p)[= ](\d+)/.exec(args)?.[1] ?? "4141");
+    found.push({ home: apiHome, port: Number.isFinite(port) ? port : null });
+  };
+  try {
+    if (process.platform === "linux") {
+      for (const pid of readdirSync("/proc").filter((p) => /^\d+$/.test(p))) {
+        try {
+          const args = readFileSync(`/proc/${pid}/cmdline`, "utf8").replaceAll("\0", " ");
+          if (!args.includes("copilot-api")) continue;
+          parse(args, readFileSync(`/proc/${pid}/environ`, "utf8").replaceAll("\0", " "));
+        } catch {
+          // process gone or not ours
+        }
+      }
+    } else if (process.platform !== "win32") {
+      const out = await new Promise<string>((resolve) => {
+        const ps = spawn("ps", ["-axwwE", "-o", "command="], { stdio: ["ignore", "pipe", "ignore"] });
+        let text = "";
+        ps.stdout.on("data", (chunk: Buffer) => (text += chunk.toString()));
+        ps.on("close", () => resolve(text));
+        ps.on("error", () => resolve(""));
+      });
+      for (const line of out.split("\n")) if (line.includes("copilot-api")) parse(line, line);
+    }
+  } catch {
+    // discovery is best effort
+  }
+  return found;
+}
+
+async function listInstances(dataDir: string): Promise<Instance[]> {
+  const ownHome = join(dataDir, "copilot-api");
+  const running = await runningCopilotApis();
+  const portOf = (home: string) => running.find((r) => r.home === home)?.port ?? null;
+  const instances: Instance[] = [{ id: OWN_INSTANCE_ID, label: "bb plugin", home: ownHome, own: true, port: portOf(ownHome) }];
+  const homes = new Set<string>([defaultHome(), ...running.map((r) => r.home)]);
+  homes.delete(ownHome);
+  for (const home of homes) {
+    if (!existsSync(join(home, DB_FILE))) continue;
+    const port = portOf(home);
+    const label = home === defaultHome() ? "copilot-api (default home)" : `copilot-api ${tildify(home)}`;
+    instances.push({ id: instanceId(home), label, home, own: false, port });
+  }
+  return instances;
+}
+
+const TOKEN_USAGE_PATH = /^\/token-usage(\/(daily|events|sessions))?(\?[A-Za-z0-9_=&%.-]*)?$/;
+const SNAPSHOT_MAX_AGE_MS = 30_000;
+const snapshotJobs = new Map<string, Promise<string>>();
+
+/** A consistent, read-only copy of another instance's usage database. */
+async function snapshot(dataDir: string, id: string, home: string): Promise<string> {
+  const dir = join(dataDir, "snapshots");
+  const target = join(dir, `${id}.sqlite`);
+  if (existsSync(target) && Date.now() - statSync(target).mtimeMs < SNAPSHOT_MAX_AGE_MS) return target;
+  const running = snapshotJobs.get(id);
+  if (running) return await running;
+  const job = (async () => {
+    await mkdir(dir, { recursive: true });
+    const temp = join(dir, `${id}.${process.pid}.${Date.now()}.tmp`);
+    const { DatabaseSync } = (await import("node:sqlite")) as typeof import("node:sqlite");
+    const db = new DatabaseSync(join(home, DB_FILE), { readOnly: true });
+    try {
+      db.exec(`VACUUM INTO '${temp.replaceAll("'", "''")}'`);
+    } finally {
+      db.close();
+    }
+    await rename(temp, target);
+    return target;
+  })();
+  snapshotJobs.set(id, job);
+  try {
+    return await job;
+  } finally {
+    snapshotJobs.delete(id);
+  }
+}
+
+/** /token-usage for another instance, answered by copilot-api's own code over a snapshot. */
+async function instanceUsage(pluginDir: string, id: string, path: string, context: ExperimentalHostRpcContext): Promise<ApiResponse> {
+  const json = (status: number, value: unknown): ApiResponse => ({ status, contentType: "application/json", body: JSON.stringify(value) });
+  if (!TOKEN_USAGE_PATH.test(path)) return json(400, { error: "Path not allowed" });
+  const dataDir = context.experimental_paths.dataDir;
+  const instance = (await listInstances(dataDir)).find((i) => i.id === id && !i.own);
+  if (!instance) return json(404, { error: "Unknown copilot-api instance" });
+  let db: string;
+  try {
+    db = await snapshot(dataDir, instance.id, instance.home);
+  } catch (error) {
+    return json(502, { error: `Could not read ${instance.home}: ${String(error)}` });
+  }
+  const readerHome = join(dataDir, "reader-home");
+  await mkdir(readerHome, { recursive: true });
+  // copilot-api's store opens the database read-write (migrations, pragmas),
+  // so concurrent readers on one snapshot fail with "database is locked".
+  const previous = readerQueues.get(instance.id) ?? Promise.resolve();
+  const result = previous.then(() => runReader(pluginDir, path, readerHome, db));
+  const tail = result.then(() => undefined);
+  readerQueues.set(instance.id, tail);
+  void tail.then(() => {
+    if (readerQueues.get(instance.id) === tail) readerQueues.delete(instance.id);
+  });
+  return await result;
+}
+
+const readerQueues = new Map<string, Promise<void>>();
+
+function runReader(pluginDir: string, path: string, readerHome: string, db: string): Promise<ApiResponse> {
+  const json = (status: number, value: unknown): ApiResponse => ({ status, contentType: "application/json", body: JSON.stringify(value) });
+  return new Promise<ApiResponse>((resolve) => {
+    const proc = spawn(process.execPath, [join(pluginDir, "usage-reader.mjs"), pluginDir, path], {
+      env: { ...copilotEnv(readerHome), COPILOT_API_SQLITE_DB_PATH: db },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let out = "";
+    let err = "";
+    proc.stdout?.on("data", (chunk: Buffer) => (out += chunk.toString()));
+    proc.stderr?.on("data", (chunk: Buffer) => (err += chunk.toString()));
+    const timer = setTimeout(() => proc.kill("SIGKILL"), 20_000);
+    proc.on("close", (code) => {
+      clearTimeout(timer);
+      resolve(code === 0 ? { status: 200, contentType: "application/json", body: out } : json(502, { error: err.trim().slice(-500) || `reader exited ${code}` }));
+    });
+    proc.on("error", (error) => {
+      clearTimeout(timer);
+      resolve(json(502, { error: String(error) }));
+    });
+  });
+}
+
 // ---------------------------------------------------------------------------
 // GitHub sign-in (device flow, driven through copilot-api's own login command)
 
@@ -525,6 +821,9 @@ export default experimental_defineHostEntry({
       return (await handler({ ...input, providerId: "claude-code" }, context)) as never;
     },
     ensureProxy: ({ pluginDir, catalog }, context) => ensureProxy(pluginDir, catalog, context),
+    models: async (_input, context) => ({ models: await listModels(context) }),
+    listInstances: async (_input, context) => ({ instances: await listInstances(context.experimental_paths.dataDir) }),
+    instanceUsage: ({ pluginDir, instanceId: id, path }, context) => instanceUsage(pluginDir, id, path, context),
     proxyStatus: (_input, context) => proxyStatus(context),
     stopProxy: async (_input, context) => ({ stopped: await stopProxy(context.experimental_paths.dataDir) }),
     startLogin: ({ pluginDir }, context) => startLogin(pluginDir, context),

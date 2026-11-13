@@ -2,8 +2,10 @@
 // - provider icon for "Claude Code (Copilot)": the orange Claude mark with the
 //   GitHub Copilot glyph in the bottom-right corner (same layout as the
 //   claude-bedrock plugin's AWS badge); keep in sync with icons/claude-copilot.svg
-// - settings section: GitHub sign-in, copilot-api status, config.json editor
-// - usage dashboard page + sidebar footer button
+// - settings section: GitHub sign-in and copilot-api status first, then the
+//   model dropdowns (from Copilot's live model list), the wrapped Claude Code
+//   options and the copilot-api config.json editor
+// - usage dashboard page (one tab per local copilot-api instance) + footer button
 import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import {
   definePluginApp,
@@ -12,7 +14,18 @@ import {
   type ExperimentalSidebarFooterDisclosureProps,
 } from "@get-bb/plugin-sdk/app";
 import { Button } from "@/components/ui/button";
-import type { AppStatus, appContract } from "./contract";
+import { Input } from "@/components/ui/input";
+import { REASONING_LEVELS, type ReasoningLevel } from "./reasoning";
+import type {
+  AppStatus,
+  appContract,
+  CopilotModel,
+  CopilotSettings,
+  Instance,
+  SettingField,
+  SettingsView,
+  SettingValue,
+} from "./contract";
 import { CLAUDE_MARK, COPILOT_PATHS } from "./icon-paths";
 import { MESSAGE_FETCH, MESSAGE_RESPONSE, VIRTUAL } from "./dashboard";
 
@@ -72,12 +85,168 @@ function errorText(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
 }
 
+const SELECT_CLASS =
+  "h-8 w-full max-w-md rounded-md border border-input bg-transparent px-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50";
+
+function Field({ label, description, children }: { label: string; description?: string | null; children: ReactNode }) {
+  return (
+    <label className="flex flex-col gap-1 py-1.5 text-sm">
+      <span className="font-medium">{label}</span>
+      {children}
+      {description ? <span className="text-xs text-muted-foreground">{description}</span> : null}
+    </label>
+  );
+}
+
+function Section({ title, description, children }: { title: string; description?: ReactNode; children: ReactNode }) {
+  return (
+    <section className="flex flex-col gap-2">
+      <h3 className="text-sm font-medium">{title}</h3>
+      {description ? <p className="text-sm text-muted-foreground">{description}</p> : null}
+      {children}
+    </section>
+  );
+}
+
+function modelLabel(model: CopilotModel): string {
+  const extras = [model.vendor, model.contextWindow ? contextLabel(model.contextWindow) : null].filter(Boolean);
+  return extras.length ? `${model.displayName} (${extras.join(", ")})` : model.displayName;
+}
+
+function contextLabel(tokens: number): string {
+  return tokens >= 1_000_000 ? `${Math.round(tokens / 100_000) / 10}M` : `${Math.round(tokens / 1000)}K`;
+}
+
+/** Dropdown of Copilot models grouped by vendor; keeps an unknown current value selectable. */
+function ModelSelect({
+  value,
+  models,
+  disabled,
+  onChange,
+}: {
+  value: string;
+  models: CopilotModel[];
+  disabled: boolean;
+  onChange: (value: string) => void;
+}) {
+  const groups = new Map<string, CopilotModel[]>();
+  for (const model of models) {
+    const vendor = model.vendor ?? "Other";
+    groups.set(vendor, [...(groups.get(vendor) ?? []), model]);
+  }
+  const known = models.some((m) => m.id === value);
+  return (
+    <select className={SELECT_CLASS} value={value} disabled={disabled} onChange={(e) => onChange(e.target.value)}>
+      {known ? null : <option value={value}>{value}</option>}
+      {[...groups.entries()].map(([vendor, list]) => (
+        <optgroup key={vendor} label={vendor}>
+          {list.map((m) => (
+            <option key={m.id} value={m.id}>
+              {modelLabel(m)}
+            </option>
+          ))}
+        </optgroup>
+      ))}
+    </select>
+  );
+}
+
+/** Text or number input that saves on blur / Enter. */
+function CommitInput({
+  value,
+  type,
+  disabled,
+  onCommit,
+}: {
+  value: string;
+  type: "text" | "number";
+  disabled: boolean;
+  onCommit: (value: string) => void;
+}) {
+  const [draft, setDraft] = useState(value);
+  useEffect(() => setDraft(value), [value]);
+  const commit = () => {
+    if (draft !== value) onCommit(draft);
+  };
+  return (
+    <Input
+      className="max-w-md"
+      type={type}
+      value={draft}
+      disabled={disabled}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") commit();
+      }}
+    />
+  );
+}
+
+/** One of the wrapped Claude Code provider's settings, rendered from its descriptor. */
+function ClaudeField({
+  field,
+  value,
+  disabled,
+  onChange,
+}: {
+  field: SettingField;
+  value: SettingValue | undefined;
+  disabled: boolean;
+  onChange: (value: SettingValue) => void;
+}) {
+  if (field.type === "boolean") {
+    return (
+      <label className="flex items-start gap-2 py-1.5 text-sm">
+        <input
+          type="checkbox"
+          className="mt-0.5"
+          checked={value === true}
+          disabled={disabled}
+          onChange={(e) => onChange(e.target.checked)}
+        />
+        <span className="flex flex-col gap-0.5">
+          <span className="font-medium">{field.label}</span>
+          {field.description ? <span className="text-xs text-muted-foreground">{field.description}</span> : null}
+        </span>
+      </label>
+    );
+  }
+  return (
+    <Field label={field.label} description={field.description}>
+      {field.type === "select" ? (
+        <select
+          className={SELECT_CLASS}
+          value={typeof value === "string" ? value : ""}
+          disabled={disabled}
+          onChange={(e) => onChange(e.target.value)}
+        >
+          {(field.options ?? []).map((option) => (
+            <option key={option} value={option}>
+              {field.optionLabels?.[option] ?? option}
+            </option>
+          ))}
+        </select>
+      ) : (
+        <CommitInput
+          type={field.type === "number" ? "number" : "text"}
+          value={value === undefined ? "" : String(value)}
+          disabled={disabled}
+          onCommit={(next) => onChange(field.type === "number" ? Number(next) : next)}
+        />
+      )}
+    </Field>
+  );
+}
+
 function SettingsSection() {
   const rpc = useRpc<typeof appContract>();
   const navigate = useBbNavigate();
   const [status, setStatus] = useState<AppStatus | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [settings, setSettings] = useState<SettingsView | null>(null);
+  const [settingsError, setSettingsError] = useState<string | null>(null);
   const [config, setConfig] = useState<string | null>(null);
   const [configMessage, setConfigMessage] = useState<string | null>(null);
 
@@ -88,6 +257,9 @@ function SettingsSection() {
       setError(null);
     }, report);
   }, [rpc, report]);
+  const loadSettings = useCallback(() => {
+    rpc.call("getSettings").then(setSettings, (cause: unknown) => setSettingsError(errorText(cause)));
+  }, [rpc]);
   const loadConfig = useCallback(() => {
     rpc.call("getConfig").then((c) => {
       setConfig(c.json);
@@ -97,8 +269,9 @@ function SettingsSection() {
 
   useEffect(() => {
     refresh();
+    loadSettings();
     loadConfig();
-  }, [refresh, loadConfig]);
+  }, [refresh, loadSettings, loadConfig]);
 
   // Poll while the GitHub sign-in waits for the user.
   const waiting = status?.login.state === "waiting";
@@ -108,12 +281,30 @@ function SettingsSection() {
     return () => clearInterval(timer);
   }, [waiting, refresh]);
 
+  // After sign-in or a (re)start the model list may have changed.
+  const running = status?.proxy?.running === true;
+  useEffect(() => {
+    if (running) loadSettings();
+  }, [running, loadSettings]);
+
   const run = (name: string, action: () => Promise<unknown>) => {
     setBusy(name);
     action()
       .then(() => refresh(), report)
       .finally(() => setBusy(null));
   };
+
+  const saveSettings = (action: () => Promise<SettingsView>) => {
+    setBusy("settings");
+    action()
+      .then((next) => {
+        setSettings(next);
+        setSettingsError(null);
+      }, (cause: unknown) => setSettingsError(errorText(cause)))
+      .finally(() => setBusy(null));
+  };
+  const setCopilot = (patch: Partial<CopilotSettings>) => saveSettings(() => rpc.call("setCopilotSettings", patch));
+  const setClaude = (key: string, value: SettingValue) => saveSettings(() => rpc.call("setClaudeSetting", { key, value }));
 
   const saveConfig = () => {
     if (config === null) return;
@@ -131,10 +322,13 @@ function SettingsSection() {
   const login = status?.login;
   const signedIn = proxy?.signedIn === true;
   const deviceUrl = login?.url ?? "https://github.com/login/device";
+  const copilot = settings?.copilot;
+  const models = settings?.models ?? [];
+  const settingsDisabled = settings === null || busy === "settings";
 
   return (
-    <div className="flex flex-col gap-6">
-      <section className="flex flex-col gap-2">
+    <div className="flex flex-col gap-8">
+      <Section title="GitHub Copilot">
         {status === null && !error ? <p className="text-sm text-muted-foreground">Loading…</p> : null}
         {status ? (
           <div>
@@ -201,14 +395,79 @@ function SettingsSection() {
           </Button>
         </div>
         {error ? <p className="text-sm text-destructive">{error}</p> : null}
-      </section>
+      </Section>
 
-      <section className="flex flex-col gap-2">
-        <h3 className="text-sm font-medium">copilot-api config.json</h3>
-        <p className="text-sm text-muted-foreground">
-          Options for the private copilot-api, such as model mappings and reasoning efforts; see the copilot-api README.
-          The gateway keys are managed by the plugin and not shown. Saving reloads a running copilot-api.
-        </p>
+      <Section
+        title="Models"
+        description={
+          models.length === 0
+            ? "The model list loads from Copilot once copilot-api has run; until then only the current values are shown."
+            : "Copilot's chat models. Non-Anthropic models run through copilot-api's Messages translation."
+        }
+      >
+        {copilot ? (
+          <div className="flex flex-col">
+            <Field label="Default model" description="Preselected for new Claude Code (Copilot) threads.">
+              <ModelSelect value={copilot.defaultModel} models={models} disabled={settingsDisabled} onChange={(v) => setCopilot({ defaultModel: v })} />
+            </Field>
+            <Field label="Default reasoning" description="Preselected reasoning effort, where the model supports it.">
+              <select
+                className={SELECT_CLASS}
+                value={copilot.defaultReasoning}
+                disabled={settingsDisabled}
+                onChange={(e) => setCopilot({ defaultReasoning: e.target.value as ReasoningLevel })}
+              >
+                {REASONING_LEVELS.map((level) => (
+                  <option key={level} value={level}>
+                    {level}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <Field label="Opus model" description="What Claude Code's opus alias resolves to.">
+              <ModelSelect value={copilot.opusModel} models={models} disabled={settingsDisabled} onChange={(v) => setCopilot({ opusModel: v })} />
+            </Field>
+            <Field label="Sonnet model" description="What Claude Code's sonnet alias resolves to.">
+              <ModelSelect value={copilot.sonnetModel} models={models} disabled={settingsDisabled} onChange={(v) => setCopilot({ sonnetModel: v })} />
+            </Field>
+            <Field label="Haiku model" description="Used by Claude Code for background tasks such as titles and summaries.">
+              <ModelSelect value={copilot.haikuModel} models={models} disabled={settingsDisabled} onChange={(v) => setCopilot({ haikuModel: v })} />
+            </Field>
+            <Field label="Stop copilot-api when idle (minutes)" description="0 keeps it running. The next turn starts it again.">
+              <CommitInput
+                type="number"
+                value={String(copilot.idleStopMinutes)}
+                disabled={settingsDisabled}
+                onCommit={(v) => setCopilot({ idleStopMinutes: Math.max(0, Math.round(Number(v) || 0)) })}
+              />
+            </Field>
+          </div>
+        ) : settingsError ? null : (
+          <p className="text-sm text-muted-foreground">Loading…</p>
+        )}
+        {settingsError ? <p className="text-sm text-destructive">{settingsError}</p> : null}
+      </Section>
+
+      {settings && settings.claudeFields.length > 0 ? (
+        <Section title="Claude Code" description="bb's Claude Code options, for this provider only. Changes apply to new turns.">
+          <div className="flex flex-col">
+            {settings.claudeFields.map((field) => (
+              <ClaudeField
+                key={field.key}
+                field={field}
+                value={settings.claudeValues[field.key]}
+                disabled={settingsDisabled}
+                onChange={(value) => setClaude(field.key, value)}
+              />
+            ))}
+          </div>
+        </Section>
+      ) : null}
+
+      <Section
+        title="copilot-api config.json"
+        description="Options for the private copilot-api, such as model mappings and reasoning efforts; see the copilot-api README. The gateway keys are managed by the plugin and not shown. Saving reloads a running copilot-api."
+      >
         <textarea
           className="min-h-64 w-full rounded-md border bg-transparent p-3 font-mono text-xs"
           spellCheck={false}
@@ -228,7 +487,7 @@ function SettingsSection() {
           </Button>
           {configMessage ? <span className="text-sm text-muted-foreground">{configMessage}</span> : null}
         </div>
-      </section>
+      </Section>
     </div>
   );
 }
@@ -250,8 +509,24 @@ function isFetchRequest(value: unknown): value is FetchRequest {
   );
 }
 
+const OWN_INSTANCE: Instance = { id: "plugin", label: "bb plugin", home: "", own: true, port: null };
+
 function UsagePage() {
+  const rpc = useRpc<typeof appContract>();
   const frame = useRef<HTMLIFrameElement>(null);
+  const [instances, setInstances] = useState<Instance[]>([OWN_INSTANCE]);
+  const [selected, setSelected] = useState(OWN_INSTANCE.id);
+  const selectedRef = useRef(selected);
+  selectedRef.current = selected;
+
+  useEffect(() => {
+    rpc.call("listInstances").then(
+      (r) => {
+        if (r.instances.length > 0) setInstances(r.instances);
+      },
+      () => undefined,
+    );
+  }, [rpc]);
 
   // The dashboard runs sandboxed (opaque origin), so it cannot reach bb's API
   // or cookies. It asks us for data via postMessage; we call the plugin's
@@ -262,7 +537,8 @@ function UsagePage() {
       if (!target || event.source !== target || !isFetchRequest(event.data)) return;
       const { id, path } = event.data;
       try {
-        const res = await fetch(`${BASE}/proxy?path=${encodeURIComponent(path)}`);
+        const query = new URLSearchParams({ path, instance: selectedRef.current });
+        const res = await fetch(`${BASE}/proxy?${query}`);
         target.postMessage(
           {
             type: MESSAGE_RESPONSE,
@@ -284,14 +560,37 @@ function UsagePage() {
   const endpoint = `${window.location.origin}${VIRTUAL}/usage`;
   const src = `${BASE}/viewer?${new URLSearchParams({ endpoint, period: "this_month" })}`;
   return (
-    <iframe
-      ref={frame}
-      src={src}
-      title="Copilot usage"
-      sandbox="allow-scripts allow-forms"
-      referrerPolicy="no-referrer"
-      className="block h-full w-full border-0"
-    />
+    <div className="flex h-full w-full flex-col">
+      {instances.length > 1 ? (
+        <div className="flex shrink-0 gap-1 overflow-x-auto border-b px-3 py-2" role="tablist">
+          {instances.map((instance) => (
+            <button
+              key={instance.id}
+              type="button"
+              role="tab"
+              aria-selected={instance.id === selected}
+              title={instance.home || undefined}
+              className={`whitespace-nowrap rounded-md px-3 py-1 text-sm ${
+                instance.id === selected ? "bg-accent text-accent-foreground" : "text-muted-foreground hover:bg-accent/50"
+              }`}
+              onClick={() => setSelected(instance.id)}
+            >
+              {instance.label}
+              {!instance.own && instance.port ? <span className="text-muted-foreground"> :{instance.port}</span> : null}
+            </button>
+          ))}
+        </div>
+      ) : null}
+      <iframe
+        key={selected}
+        ref={frame}
+        src={src}
+        title="Copilot usage"
+        sandbox="allow-scripts allow-forms"
+        referrerPolicy="no-referrer"
+        className="block min-h-0 w-full flex-1 border-0"
+      />
+    </div>
   );
 }
 
@@ -310,8 +609,8 @@ export default definePluginApp((app) => {
   app.experimental_icons.register({ name: COPILOT_ICON, component: CopilotIcon });
   app.slots.settingsSection({
     id: "copilot",
-    title: "GitHub Copilot",
-    description: "Sign-in and the private copilot-api used by Claude Code (Copilot).",
+    title: "Claude Code (Copilot)",
+    description: "GitHub sign-in, models and the private copilot-api used by the Claude Code (Copilot) provider.",
     component: SettingsSection,
   });
   app.slots.navPanel({

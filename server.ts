@@ -6,34 +6,32 @@
 //   - provider id/name/icon/strings changed, usage maintenance off,
 //     BB_CLAUDE_CODE_EXECUTABLE / CLAUDE_CODE_OAUTH_TOKEN not passed through;
 //   - its provider-usage RPC dropped (it only serves provider-claude-code);
-//   - its settings merged with this plugin's own.
+//   - its settings kept by this plugin (settings.ts) and passed to its
+//     deriveProviderOptions.
 // The thread environment points Claude Code at this plugin's private
 // copilot-api, which the host entry runs. The server also serves the usage
-// dashboard, a Provider usage card and the settings page's API, and stops
+// dashboard, a Provider usage card and the settings section's API, and stops
 // copilot-api when no Copilot thread has run for a while.
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import {
-  defineRpcContract,
-  type BbPluginApi,
-  type PluginSettingDescriptor,
-  type PluginSettingsHandle,
-} from "@get-bb/plugin-sdk";
+import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import {
   appContract,
   hostContract,
-  REASONING_LEVELS,
   type AppStatus,
-  type CatalogDefaults,
+  type CopilotModel,
   type ProxyStatus,
+  type SettingsView,
 } from "./contract.js";
 import { DASHBOARD_PATHS, SHIM, VIEWER_CSP } from "./dashboard.js";
+import { SettingsStore } from "./settings.js";
 
 const PROVIDER_ID = "claude-copilot";
 const PROVIDER_NAME = "Claude Code (Copilot)";
 const BUILTIN_ID = "provider-claude-code";
+const OWN_INSTANCE_ID = "plugin";
 
 /** This plugin's root: the nearest folder up from the bundle with our package.json. */
 function findPluginDir(): string {
@@ -57,68 +55,18 @@ function builtinServerPath(): string {
 }
 
 // ---------------------------------------------------------------------------
-// Settings (merged into the built-in provider's own settings page)
-
-const modelIdSchema = z.string().trim().min(1, "Enter a model id").max(200);
-
-const COPILOT_SETTINGS = {
-  defaultModel: {
-    type: "string",
-    label: "Default model",
-    description: "Model preselected for new Claude Code (Copilot) threads.",
-    default: "claude-opus-5-5",
-    experimental_schema: modelIdSchema,
-  },
-  defaultReasoning: {
-    type: "select",
-    label: "Default reasoning level",
-    options: [...REASONING_LEVELS],
-    experimental_optionLabels: { low: "Low", medium: "Medium", high: "High", xhigh: "Extra High", max: "Max" },
-    default: "medium",
-  },
-  opusModel: {
-    type: "string",
-    label: "Opus model",
-    description: "Copilot model id Claude Code uses for Opus (ANTHROPIC_DEFAULT_OPUS_MODEL).",
-    default: "claude-opus-5-5",
-    experimental_schema: modelIdSchema,
-  },
-  sonnetModel: {
-    type: "string",
-    label: "Sonnet model",
-    description: "Copilot model id Claude Code uses for Sonnet (ANTHROPIC_DEFAULT_SONNET_MODEL).",
-    default: "claude-sonnet-5-5",
-    experimental_schema: modelIdSchema,
-  },
-  haikuModel: {
-    type: "string",
-    label: "Haiku model",
-    description: "Copilot model id Claude Code uses for Haiku and background tasks (ANTHROPIC_DEFAULT_HAIKU_MODEL).",
-    default: "claude-haiku-5-5",
-    experimental_schema: modelIdSchema,
-  },
-  idleStopMinutes: {
-    type: "number",
-    label: "Stop copilot-api after idle minutes",
-    description: "Stop the private copilot-api when no Claude Code (Copilot) thread has run for this long. 0 keeps it running.",
-    default: 30,
-    experimental_schema: z.number().int().min(0).max(24 * 60),
-  },
-} satisfies Record<string, PluginSettingDescriptor>;
-
-type CopilotSettings = PluginSettingsHandle<typeof COPILOT_SETTINGS>;
-
-// ---------------------------------------------------------------------------
 // Wrapping the built-in provider plugin
 
 type ProviderDeclaration = Parameters<BbPluginApi["providers"]["register"]>[0];
+type DeriveContext = { settings: Record<string, unknown> } & Record<string, unknown>;
 
-function rewriteDeclaration(declaration: ProviderDeclaration): ProviderDeclaration {
+function rewriteDeclaration(declaration: ProviderDeclaration, settings: SettingsStore): ProviderDeclaration {
   const d = { ...(declaration as unknown as Record<string, unknown>) };
   delete d.internal_DO_NOT_USE_guidedSignIn; // that flow signs in to claude.ai
   const strings = (d.strings ?? {}) as Record<string, unknown>;
   const maintenance = (d.maintenance ?? {}) as Record<string, unknown>;
   const env = (d.env ?? {}) as { passthrough?: string[] };
+  const derive = d.deriveProviderOptions as ((ctx: DeriveContext) => unknown) | undefined;
   return {
     ...d,
     id: PROVIDER_ID,
@@ -139,6 +87,8 @@ function rewriteDeclaration(declaration: ProviderDeclaration): ProviderDeclarati
         (name) => name !== "BB_CLAUDE_CODE_EXECUTABLE" && name !== "CLAUDE_CODE_OAUTH_TOKEN",
       ),
     },
+    // The built-in reads its settings only here; give it the plugin-kept values.
+    ...(derive ? { deriveProviderOptions: (ctx: DeriveContext) => derive({ ...ctx, settings: { ...ctx.settings, ...settings.claudeValues() } }) } : {}),
   } as unknown as ProviderDeclaration;
 }
 
@@ -152,19 +102,29 @@ function bindAll<T extends object>(target: T, overrides: Record<string | symbol,
   });
 }
 
-/** Run the built-in provider plugin against a rewritten API; returns the merged settings handle. */
-async function registerWrappedProvider(bb: BbPluginApi): Promise<CopilotSettings> {
-  let settings: CopilotSettings | null = null;
+/** Run the built-in provider plugin against a rewritten API. */
+async function registerWrappedProvider(bb: BbPluginApi, settings: SettingsStore): Promise<void> {
   const wrapped = bindAll(bb, {
     providers: bindAll(bb.providers, {
-      register: (declaration: ProviderDeclaration) => bb.providers.register(rewriteDeclaration(declaration)),
+      register: (declaration: ProviderDeclaration) => bb.providers.register(rewriteDeclaration(declaration, settings)),
     }),
     rpc: bindAll(bb.rpc, { register: () => {} }), // the built-in's provider-usage source; not ours
     settings: bindAll(bb.settings, {
+      // Keep the built-in's settings ourselves (rendered by our section).
       define: (descriptors: Record<string, unknown>) => {
-        const handle = bb.settings.define({ ...(descriptors as object), ...COPILOT_SETTINGS } as typeof COPILOT_SETTINGS);
-        settings = handle;
-        return handle;
+        settings.setClaudeDescriptors(descriptors);
+        return {
+          get: async () => settings.claudeValues(),
+          experimental_set: async (values: Record<string, unknown>) => {
+            for (const [key, value] of Object.entries(values)) {
+              if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+                await settings.setClaude(key, value);
+              }
+            }
+            return settings.claudeValues();
+          },
+          onChange: (listener: () => void) => settings.onChange(listener),
+        };
       },
     }),
   });
@@ -174,7 +134,6 @@ async function registerWrappedProvider(bb: BbPluginApi): Promise<CopilotSettings
     default: (bb: BbPluginApi) => unknown;
   };
   await builtin.default(wrapped);
-  return settings ?? bb.settings.define(COPILOT_SETTINGS);
 }
 
 // ---------------------------------------------------------------------------
@@ -242,24 +201,36 @@ const copilotUsageSchema = z.object({
 });
 type CopilotUsage = z.infer<typeof copilotUsageSchema>;
 
-function planName(usage: CopilotUsage): string | null {
-  return usage.copilot_plan ? `Copilot ${usage.copilot_plan[0]?.toUpperCase()}${usage.copilot_plan.slice(1)}` : null;
+function capitalized(value: string): string {
+  return `${value[0]?.toUpperCase() ?? ""}${value.slice(1)}`;
 }
 
-/** Short plan badge for the usage card ("Business"), like bb's Copilot card. */
-function planLabel(usage: CopilotUsage): string | null {
-  return usage.copilot_plan ? `${usage.copilot_plan[0]?.toUpperCase()}${usage.copilot_plan.slice(1)}` : null;
+function planName(usage: CopilotUsage): string | null {
+  return usage.copilot_plan ? `Copilot ${capitalized(usage.copilot_plan)}` : null;
+}
+
+function compactNumber(value: number): string {
+  if (value >= 1_000_000) return `${Math.round(value / 100_000) / 10}M`;
+  if (value >= 10_000) return `${Math.round(value / 1000)}k`;
+  if (value >= 1000) return `${Math.round(value / 100) / 10}k`;
+  return String(Math.round(value));
 }
 
 function usageWindows(usage: CopilotUsage): z.infer<typeof usageWindow>[] {
   const premium = usage.quota_snapshots?.premium_interactions;
   if (!premium || premium.unlimited || premium.percent_remaining === undefined) return [];
   const used = Math.max(0, 100 - premium.percent_remaining);
+  const { entitlement, remaining } = premium;
+  // bb's card shows only label + percent (or USD); the label carries the counts.
+  const counts =
+    entitlement !== undefined && entitlement > 0 && remaining !== undefined
+      ? ` ${compactNumber(Math.max(0, entitlement - remaining))}/${compactNumber(entitlement)}`
+      : "";
   return [
     {
       kind: "custom",
       id: "premium",
-      label: "Premium",
+      label: `Premium${counts}`,
       usedPercent: Math.round(used * 10) / 10,
       resetsAt: usage.quota_reset_date_utc ?? null,
       model: null,
@@ -271,17 +242,19 @@ function usageWindows(usage: CopilotUsage): z.infer<typeof usageWindow>[] {
 // ---------------------------------------------------------------------------
 
 export default async function plugin(bb: BbPluginApi) {
-  const settings = await registerWrappedProvider(bb);
+  const settings = new SettingsStore(bb);
+  await settings.load();
+  await registerWrappedProvider(bb, settings);
   const host = bb.hosts.experimental_client({ contract: hostContract });
 
-  async function catalogDefaults(): Promise<CatalogDefaults> {
-    const s = await settings.get();
-    const reasoning = REASONING_LEVELS.find((level) => level === s.defaultReasoning) ?? "medium";
-    return { defaultModel: s.defaultModel.trim(), defaultReasoning: reasoning };
-  }
-
-  const ensure = async (hostId: string): Promise<ProxyStatus> =>
-    host.call("ensureProxy", { pluginDir: PLUGIN_DIR, catalog: await catalogDefaults() }, { hostId });
+  const ensure = async (hostId: string): Promise<ProxyStatus> => {
+    const s = settings.copilot();
+    return host.call(
+      "ensureProxy",
+      { pluginDir: PLUGIN_DIR, catalog: { defaultModel: s.defaultModel, defaultReasoning: s.defaultReasoning } },
+      { hostId },
+    );
+  };
 
   /** The machine the bb server runs on (copilot-api usage lives there). */
   async function primaryHost(): Promise<{ id: string; name: string } | null> {
@@ -296,31 +269,49 @@ export default async function plugin(bb: BbPluginApi) {
     return found.id;
   }
 
+  const modelCache = new Map<string, { at: number; models: CopilotModel[] }>();
+  async function models(hostId: string): Promise<CopilotModel[]> {
+    const cached = modelCache.get(hostId);
+    if (cached && Date.now() - cached.at < 60_000) return cached.models;
+    const { models: list } = await host.call("models", {}, { hostId });
+    modelCache.set(hostId, { at: Date.now(), models: list });
+    return list;
+  }
+
   // -- Thread environment ----------------------------------------------------
 
   bb.providers.experimental_contributeEnv(PROVIDER_ID, async ({ hostId }) => {
-    const [status, s] = await Promise.all([ensure(hostId), settings.get()]);
+    const status = await ensure(hostId);
+    const s = settings.copilot();
+    const list = await models(hostId).catch(() => [] as CopilotModel[]);
+    // [1m] models: compact before the smallest real input limit among them.
+    // Claude Code caps this at each model's own window, so 200K models keep theirs.
+    const oneM = list.filter((m) => m.id.endsWith("[1m]") && m.inputLimit !== null).map((m) => m.inputLimit as number);
     const entries = [
       { name: "ANTHROPIC_BASE_URL", value: `http://127.0.0.1:${status.port}`, reason: "Route Claude Code through the plugin's copilot-api" },
       { name: "ANTHROPIC_AUTH_TOKEN", value: status.apiKey, reason: "Gateway key of the plugin's copilot-api" },
-      { name: "ANTHROPIC_MODEL", value: s.defaultModel.trim(), reason: "Default model (plugin setting)" },
-      { name: "ANTHROPIC_DEFAULT_OPUS_MODEL", value: s.opusModel.trim(), reason: "Copilot model for Opus (plugin setting)" },
-      { name: "ANTHROPIC_DEFAULT_SONNET_MODEL", value: s.sonnetModel.trim(), reason: "Copilot model for Sonnet (plugin setting)" },
-      { name: "ANTHROPIC_DEFAULT_HAIKU_MODEL", value: s.haikuModel.trim(), reason: "Copilot model for Haiku (plugin setting)" },
+      { name: "ANTHROPIC_MODEL", value: s.defaultModel, reason: "Default model (plugin setting)" },
+      { name: "ANTHROPIC_DEFAULT_OPUS_MODEL", value: s.opusModel, reason: "Copilot model for Opus (plugin setting)" },
+      { name: "ANTHROPIC_DEFAULT_SONNET_MODEL", value: s.sonnetModel, reason: "Copilot model for Sonnet (plugin setting)" },
+      { name: "ANTHROPIC_DEFAULT_HAIKU_MODEL", value: s.haikuModel, reason: "Copilot model for Haiku and background tasks (plugin setting)" },
       { name: "CLAUDE_CODE_USE_BEDROCK", value: "0", reason: "Use the Anthropic API shape" },
       { name: "CLAUDE_CODE_AUTO_MODE_SERVER", value: "0", reason: "copilot-api has no auto-mode endpoint" },
       { name: "DISABLE_NON_ESSENTIAL_MODEL_CALLS", value: "1", reason: "Save Copilot requests" },
       { name: "DISABLE_TELEMETRY", value: "1", reason: "No Anthropic telemetry for Copilot sessions" },
       { name: "DISABLE_ERROR_REPORTING", value: "1", reason: "No Anthropic error reporting for Copilot sessions" },
       { name: "DISABLE_FEEDBACK_COMMAND", value: "1", reason: "Feedback goes to Anthropic" },
+      { name: "CLAUDE_CODE_ATTRIBUTION_HEADER", value: "0", reason: "Keeps the system prompt stable for prompt caching (copilot-api guide)" },
       { name: "CLAUDE_COPILOT_SESSION", value: "1", reason: "Lets the statusline detect Copilot mode" },
     ];
-    if (status.claudePath) {
+    if (oneM.length > 0) {
       entries.push({
-        name: "BB_CLAUDE_CODE_EXECUTABLE",
-        value: status.claudePath,
-        reason: "Plain claude, not a machine-wide wrapper",
+        name: "CLAUDE_CODE_AUTO_COMPACT_WINDOW",
+        value: String(Math.min(...oneM)),
+        reason: "Compact 1M Copilot models before their real input limit",
       });
+    }
+    if (status.claudePath) {
+      entries.push({ name: "BB_CLAUDE_CODE_EXECUTABLE", value: status.claudePath, reason: "Plain claude, not a machine-wide wrapper" });
     }
     return entries;
   });
@@ -388,10 +379,11 @@ export default async function plugin(bb: BbPluginApi) {
             usage: { status: "error", ...meta, planLabel: null, message: error ?? "copilot-api is not running. Refresh to start it." },
           };
         }
+        const plan = cached.usage.copilot_plan ? capitalized(cached.usage.copilot_plan) : null;
         return {
           accountKey: cached.usage.login ?? null,
           observedAt: cached.observedAt,
-          usage: { status: "ok", ...meta, planLabel: planLabel(cached.usage), windows: usageWindows(cached.usage) },
+          usage: { status: "ok", ...meta, planLabel: plan, windows: usageWindows(cached.usage) },
         };
       },
     },
@@ -401,7 +393,7 @@ export default async function plugin(bb: BbPluginApi) {
     },
   );
 
-  // -- Settings page API ------------------------------------------------------
+  // -- Settings section API -----------------------------------------------------
 
   async function appStatus(): Promise<AppStatus> {
     const found = await primaryHost();
@@ -429,6 +421,17 @@ export default async function plugin(bb: BbPluginApi) {
     }
   }
 
+  async function settingsView(): Promise<SettingsView> {
+    const hostId = await primaryHostId().catch(() => null);
+    const list = hostId ? await models(hostId).catch(() => [] as CopilotModel[]) : [];
+    return {
+      copilot: settings.copilot(),
+      claudeFields: settings.claudeFields,
+      claudeValues: settings.claudeValues(),
+      models: list,
+    };
+  }
+
   bb.rpc.register(appContract, {
     status: () => appStatus(),
     startLogin: async () => host.call("startLogin", { pluginDir: PLUGIN_DIR }, { hostId: await primaryHostId() }),
@@ -454,16 +457,31 @@ export default async function plugin(bb: BbPluginApi) {
     },
     getConfig: async () => host.call("getConfig", {}, { hostId: await primaryHostId() }),
     setConfig: async ({ json }) => host.call("setConfig", { json }, { hostId: await primaryHostId() }),
+    getSettings: () => settingsView(),
+    setCopilotSettings: async (patch) => {
+      await settings.setCopilot(patch);
+      // Rewrite the bridge's catalog file now so the picker defaults follow.
+      const hostId = await primaryHostId().catch(() => null);
+      if (hostId) await ensure(hostId).catch(() => null);
+      return settingsView();
+    },
+    setClaudeSetting: async ({ key, value }) => {
+      await settings.setClaude(key, value);
+      return settingsView();
+    },
+    listInstances: async () => host.call("listInstances", {}, { hostId: await primaryHostId() }),
   });
 
-  // -- Usage dashboard ---------------------------------------------------------
+  // -- Usage dashboard -------------------------------------------------------------
 
   bb.http.route("GET", "/viewer", async (c) => {
     const hostId = await primaryHostId();
     const status = await ensure(hostId);
     if (!status.running) {
       return c.text(
-        status.signedIn ? "copilot-api did not start; see the Claude Copilot plugin settings." : "Sign in to GitHub Copilot in the Claude Copilot plugin settings first.",
+        status.signedIn
+          ? "copilot-api did not start; see the Claude Copilot plugin settings."
+          : "Sign in to GitHub Copilot in the Claude Copilot plugin settings first.",
         503,
       );
     }
@@ -475,9 +493,17 @@ export default async function plugin(bb: BbPluginApi) {
 
   bb.http.route("GET", "/proxy", async (c) => {
     const target = c.req.query("path") ?? "";
+    const instance = c.req.query("instance") ?? OWN_INSTANCE_ID;
     const [path = "", query = ""] = target.split("?", 2);
     if (!DASHBOARD_PATHS.test(path)) return c.text("Path not allowed", 400);
-    const res = await host.call("apiRequest", { path: query ? `${path}?${query}` : path }, { hostId: await primaryHostId() });
+    const full = query ? `${path}?${query}` : path;
+    const hostId = await primaryHostId();
+    // Token usage is per copilot-api home; account-level data (quota, models)
+    // always comes from this plugin's own copilot-api.
+    const res =
+      instance !== OWN_INSTANCE_ID && path.startsWith("/token-usage")
+        ? await host.call("instanceUsage", { pluginDir: PLUGIN_DIR, instanceId: instance, path: full }, { hostId })
+        : await host.call("apiRequest", { path: full }, { hostId });
     return new Response(res.body, { status: res.status, headers: { "content-type": res.contentType } });
   });
 
@@ -493,7 +519,7 @@ export default async function plugin(bb: BbPluginApi) {
         });
         if (signal.aborted) break;
         try {
-          const { idleStopMinutes } = await settings.get();
+          const { idleStopMinutes } = settings.copilot();
           const running = await bb.sdk.threads.listRunning();
           let active = false;
           if (running.length > 0) {
