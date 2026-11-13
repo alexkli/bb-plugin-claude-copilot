@@ -1,0 +1,34 @@
+{
+  "name": "bb-plugin-claude-copilot",
+  "version": "0.1.0",
+  "type": "module",
+  "engines": {
+    "bb": ">=0.49",
+    "bbPluginSdk": ">=0.6.132"
+  },
+  "bb": {
+    "name": "Claude Copilot [Experimental]",
+    "description": "Claude Code through GitHub Copilot, as its own bb provider, with a private copilot-api.",
+    "branding": {
+      "icon": "./icons/claude-copilot.svg"
+    },
+    "server": "./server.ts",
+    "host": "./host.ts",
+    "app": "./app.tsx"
+  },
+  "dependencies": {
+    "@get-bb/plugin-sdk": "0.6.132",
+    "@jeffreycao/copilot-api": "2.9.3",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.3.0",
+    "better-sqlite3": "^12.0.0",
+    "cron-parser": "^5.5.0",
+    "hono": "^4.11.9",
+    "typescript": "^5.7.0"
+  },
+  "description": "Claude Code through GitHub Copilot, as its own bb provider, with a private copilot-api."
+}
