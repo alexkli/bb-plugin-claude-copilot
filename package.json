@@ -7,7 +7,7 @@
     "bbPluginSdk": ">=0.6.132"
   },
   "bb": {
-    "name": "Claude Copilot",
+    "name": "Claude Copilot provider",
     "description": "Claude Code harness with GitHub Copilot as backend. Using the caozhiyuan/copilot-api proxy.",
     "branding": {
       "icon": "./icons/claude-copilot.svg"
