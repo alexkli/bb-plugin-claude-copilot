@@ -70,7 +70,8 @@ Status: experimental prototype.
   (`VACUUM INTO`) with copilot-api's own query code (`usage-reader.mjs`).
   Subscriptions/quota data comes from GitHub and is the same for all.
 - **Provider usage card**: the Copilot premium-request quota (percent used,
-  used/entitled counts in the label, reset date). Background polls never start an idle copilot-api; they show
+  reset date; the expanded row shows used / entitled AI credits in dollars,
+  1 credit = $0.01). Background polls never start an idle copilot-api; they show
   the last value.
 
 ## Commands

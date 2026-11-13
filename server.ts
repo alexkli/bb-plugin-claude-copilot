@@ -195,6 +195,8 @@ const copilotUsageSchema = z.object({
         percent_remaining: z.number().optional(),
         entitlement: z.number().optional(),
         remaining: z.number().optional(),
+        credits_used: z.number().optional(),
+        token_based_billing: z.boolean().optional(),
       }),
     )
     .optional(),
@@ -209,11 +211,14 @@ function planName(usage: CopilotUsage): string | null {
   return usage.copilot_plan ? `Copilot ${capitalized(usage.copilot_plan)}` : null;
 }
 
-function compactNumber(value: number): string {
-  if (value >= 1_000_000) return `${Math.round(value / 100_000) / 10}M`;
-  if (value >= 10_000) return `${Math.round(value / 1000)}k`;
-  if (value >= 1000) return `${Math.round(value / 100) / 10}k`;
-  return String(Math.round(value));
+/**
+ * USD cents per unit of the premium quota. With token-based billing the quota
+ * is in AI credits of $0.01 (copilot-api prices usage the same way: its
+ * total_cost_nanos is total_nano_aiu / 100). Request-based quotas use the
+ * list price of a premium request ($0.04).
+ */
+function centsPerUnit(tokenBased: boolean | undefined): number {
+  return tokenBased ? 1 : 4;
 }
 
 function usageWindows(usage: CopilotUsage): z.infer<typeof usageWindow>[] {
@@ -221,20 +226,23 @@ function usageWindows(usage: CopilotUsage): z.infer<typeof usageWindow>[] {
   if (!premium || premium.unlimited || premium.percent_remaining === undefined) return [];
   const used = Math.max(0, 100 - premium.percent_remaining);
   const { entitlement, remaining } = premium;
-  // bb's card shows only label + percent (or USD); the label carries the counts.
-  const counts =
-    entitlement !== undefined && entitlement > 0 && remaining !== undefined
-      ? ` ${compactNumber(Math.max(0, entitlement - remaining))}/${compactNumber(entitlement)}`
-      : "";
+  // bb's provider-usage card shows amounts only as USD ("$used / $limit" next
+  // to the reset time when a row is expanded), so the quota is shown in dollars.
+  const usedUnits = premium.credits_used ?? (entitlement !== undefined && remaining !== undefined ? entitlement - remaining : undefined);
+  const cents = centsPerUnit(premium.token_based_billing);
+  const cost =
+    entitlement !== undefined && entitlement > 0 && usedUnits !== undefined
+      ? { usedUsdCents: Math.max(0, usedUnits) * cents, limitUsdCents: entitlement * cents }
+      : null;
   return [
     {
       kind: "custom",
       id: "premium",
-      label: `Premium${counts}`,
+      label: "Premium",
       usedPercent: Math.round(used * 10) / 10,
       resetsAt: usage.quota_reset_date_utc ?? null,
       model: null,
-      cost: null,
+      cost,
     },
   ];
 }
