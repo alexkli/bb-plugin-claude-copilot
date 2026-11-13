@@ -5,7 +5,7 @@ GitHub Copilot through an embedded
 [copilot-api](https://github.com/caozhiyuan/copilot-api). It sits next to bb's
 normal Claude Code provider, which keeps using your Anthropic login.
 
-Status: experimental prototype.
+Status: prototype; relies on bb internals (see below).
 
 ## How it works
 
