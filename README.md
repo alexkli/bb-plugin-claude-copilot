@@ -1,7 +1,7 @@
 # bb-plugin-claude-copilot
 
 **Claude Code (Copilot)** as its own bb provider: Claude Code running against
-GitHub Copilot through a private, bundled
+GitHub Copilot through an embedded
 [copilot-api](https://github.com/caozhiyuan/copilot-api). It sits next to bb's
 normal Claude Code provider, which keeps using your Anthropic login.
 
@@ -20,7 +20,7 @@ Status: experimental prototype.
   forwards to it, and delegates `resolveNativeRoots` to the built-in host
   entry. bb updates therefore flow through. This relies on bb internals that
   are not public API.
-- **Private copilot-api.** Pinned in this plugin's `package.json`, run with
+- **Embedded copilot-api.** Pinned in this plugin's `package.json`, run with
   bb's own Node (`ELECTRON_RUN_AS_NODE=1`), with its own `COPILOT_API_HOME`
   (`~/.bb/plugins/claude-copilot/host-data/copilot-api`), a random port and a
   generated gateway key (`auth.apiKeys`). A machine-wide copilot-api install,
@@ -77,7 +77,7 @@ Status: experimental prototype.
 ## Commands
 
 ```
-bb claude-copilot status   Show the private copilot-api state
+bb claude-copilot status   Show the embedded copilot-api state
 bb claude-copilot login    Sign in to GitHub Copilot (device code)
 bb claude-copilot logout   Sign out of GitHub Copilot
 bb claude-copilot start    Start copilot-api

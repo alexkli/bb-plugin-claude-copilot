@@ -8,7 +8,7 @@
 //   - its provider-usage RPC dropped (it only serves provider-claude-code);
 //   - its settings kept by this plugin (settings.ts) and passed to its
 //     deriveProviderOptions.
-// The thread environment points Claude Code at this plugin's private
+// The thread environment points Claude Code at this plugin's embedded
 // copilot-api, which the host entry runs. The server also serves the usage
 // dashboard, a Provider usage card and the settings section's API, and stops
 // copilot-api when no Copilot thread has run for a while.
@@ -555,7 +555,7 @@ export default async function plugin(bb: BbPluginApi) {
   // -- CLI -----------------------------------------------------------------------
 
   const usage = [
-    "bb claude-copilot status   Show the private copilot-api state",
+    "bb claude-copilot status   Show the embedded copilot-api state",
     "bb claude-copilot login    Sign in to GitHub Copilot (device code)",
     "bb claude-copilot logout   Sign out of GitHub Copilot",
     "bb claude-copilot start    Start copilot-api",
@@ -564,7 +564,7 @@ export default async function plugin(bb: BbPluginApi) {
 
   bb.cli.register({
     name: "claude-copilot",
-    summary: "Manage the Claude Code (Copilot) provider's private copilot-api",
+    summary: "Manage the Claude Code (Copilot) provider's embedded copilot-api",
     commands: [
       { name: "status", summary: "Show copilot-api state", usage: "bb claude-copilot status" },
       { name: "login", summary: "Sign in to GitHub Copilot", usage: "bb claude-copilot login" },

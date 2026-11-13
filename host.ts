@@ -1,6 +1,6 @@
 // Host side of bb-plugin-claude-copilot.
 //
-// 1. Runs a private copilot-api (the plugin's own pinned copy, its own
+// 1. Runs an embedded copilot-api (the plugin's own pinned copy, its own
 //    COPILOT_API_HOME, port and gateway key) under bb's Node.
 // 2. Re-exports bb's built-in Claude Code provider bridge (loaded at runtime
 //    from bb's host-artifact cache, so it follows bb updates) for the
@@ -540,7 +540,7 @@ async function stopProxy(dataDir: string): Promise<boolean> {
 /** Read-only copilot-api paths the dashboard and usage card may GET. */
 const API_PATHS = /^\/(usage-viewer|(usage|token-usage|models|v1\/models)(\/[A-Za-z0-9_.-]+)*)(\?[^#\s]*)?$/;
 
-/** GET a path on the private copilot-api with the gateway key. */
+/** GET a path on the embedded copilot-api with the gateway key. */
 async function apiRequest(path: string, context: ExperimentalHostRpcContext): Promise<ApiResponse> {
   const segments = (path.split("?")[0] ?? "").split("/");
   if (!API_PATHS.test(path) || segments.some((s) => s === "." || s === "..")) {

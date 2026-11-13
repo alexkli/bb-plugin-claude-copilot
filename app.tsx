@@ -466,7 +466,7 @@ function SettingsSection() {
 
       <Section
         title="copilot-api config.json"
-        description="Options for the private copilot-api, such as model mappings and reasoning efforts; see the copilot-api README. The gateway keys are managed by the plugin and not shown. Saving reloads a running copilot-api."
+        description="Options for the embedded copilot-api, such as model mappings and reasoning efforts; see the copilot-api README. The gateway keys are managed by the plugin and not shown. Saving reloads a running copilot-api."
       >
         <textarea
           className="min-h-64 w-full rounded-md border bg-transparent p-3 font-mono text-xs"
@@ -610,7 +610,7 @@ export default definePluginApp((app) => {
   app.slots.settingsSection({
     id: "copilot",
     title: "Claude Code (Copilot)",
-    description: "GitHub sign-in, models and the private copilot-api used by the Claude Code (Copilot) provider.",
+    description: "GitHub sign-in, models and the embedded copilot-api used by the Claude Code (Copilot) provider.",
     component: SettingsSection,
   });
   app.slots.navPanel({

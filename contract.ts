@@ -87,7 +87,7 @@ export const hostContract = defineRpcContract({
   startLogin: { input: pluginDirInput, output: loginStatusSchema },
   loginStatus: { input: z.object({}).strict(), output: loginStatusSchema },
   signOut: { input: z.object({}).strict(), output: z.object({ signedOut: z.boolean() }) },
-  /** GET a path on the private copilot-api, with the gateway key. */
+  /** GET a path on the embedded copilot-api, with the gateway key. */
   apiRequest: {
     input: z.object({ path: z.string().min(1).max(4096) }).strict(),
     output: apiResponseSchema,

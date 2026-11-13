@@ -8,7 +8,7 @@
   },
   "bb": {
     "name": "Claude Copilot [Experimental]",
-    "description": "Claude Code through GitHub Copilot, as its own bb provider, with a private copilot-api.",
+    "description": "Claude Code harness with GitHub Copilot as backend. Using the caozhiyuan/copilot-api proxy.",
     "branding": {
       "icon": "./icons/claude-copilot.svg"
     },
@@ -34,5 +34,5 @@
     "tailwind-merge": "^3.7.0",
     "typescript": "^5.7.0"
   },
-  "description": "Claude Code through GitHub Copilot, as its own bb provider, with a private copilot-api."
+  "description": "Claude Code harness with GitHub Copilot as backend. Using the caozhiyuan/copilot-api proxy."
 }

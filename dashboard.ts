@@ -3,7 +3,7 @@
 // The page runs in a sandboxed iframe (opaque origin: no access to bb, its
 // cookies or storage). A script injected first into its <head> sends the
 // page's API fetches to the embedding bb page via postMessage; that page calls
-// this plugin's /proxy route, which reads the private copilot-api through the
+// this plugin's /proxy route, which reads the embedded copilot-api through the
 // host entry.
 
 /** Virtual path the dashboard thinks its API lives under; the shim rewrites it. */
