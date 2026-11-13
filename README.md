@@ -46,8 +46,9 @@ Status: prototype; relies on bb internals (see below).
   it again through the env resolver.
 - **Plan mode** and the rest of Claude Code's bb features come from the
   reused declaration and bridge.
-- **Icon.** The Claude mark with the GitHub Copilot glyph in the bottom-right
-  corner (`app.tsx`; `icons/claude-copilot.svg` is the monochrome fallback).
+- **Icon.** The Claude mark and the GitHub Copilot glyph at equal size on a
+  diagonal, Claude on top (`app.tsx`; `icons/claude-copilot.svg` is the
+  monochrome fallback).
 
 ## In bb
 

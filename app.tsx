@@ -1,7 +1,7 @@
 // Frontend of bb-plugin-claude-copilot:
-// - provider icon for "Claude Code (Copilot)": the orange Claude mark with the
-//   GitHub Copilot glyph in the bottom-right corner (same layout as the
-//   claude-bedrock plugin's AWS badge); keep in sync with icons/claude-copilot.svg
+// - provider icon for "Claude Code (Copilot)": the orange Claude mark and the
+//   GitHub Copilot glyph at equal size on a diagonal, Claude on top; keep in
+//   sync with icons/claude-copilot.svg
 // - settings section: GitHub sign-in and copilot-api status first, then the
 //   model dropdowns (from Copilot's live model list), the wrapped Claude Code
 //   options and the copilot-api config.json editor
@@ -37,6 +37,12 @@ const COPILOT_ICON = "claude-copilot/copilot";
 // ---------------------------------------------------------------------------
 // Icons
 
+// Equal-size marks on a diagonal: Claude top-left (drawn on top), Copilot
+// bottom-right. Copilot is masked by a slightly thickened Claude shape, so a
+// thin gap separates the two where the spokes cross it.
+const CLAUDE_SCALE = 700 / 1200;
+const CLAUDE_GAP = 40;
+
 function ClaudeCopilotIcon({ className }: { className?: string }) {
   const mask = useId();
   return (
@@ -45,16 +51,25 @@ function ClaudeCopilotIcon({ className }: { className?: string }) {
       <defs>
         <mask id={mask}>
           <rect width="1200" height="1200" fill="#fff" />
-          <rect x="560" y="640" width="660" height="580" rx="170" fill="#000" />
+          <path
+            fill="#000"
+            stroke="#000"
+            strokeWidth={CLAUDE_GAP / CLAUDE_SCALE}
+            strokeLinejoin="round"
+            transform={`scale(${CLAUDE_SCALE})`}
+            d={CLAUDE_MARK}
+          />
         </mask>
       </defs>
-      <path fill="#D97757" mask={`url(#${mask})`} d={CLAUDE_MARK} />
       {/* Copilot glyph in the theme's text colour */}
-      <g transform="translate(624 674) scale(11.5)" fill="currentColor">
-        {COPILOT_PATHS.map((d) => (
-          <path key={d.slice(0, 16)} d={d} />
-        ))}
+      <g mask={`url(#${mask})`}>
+        <g transform="translate(600 540) scale(12.5)" fill="currentColor">
+          {COPILOT_PATHS.map((d) => (
+            <path key={d.slice(0, 16)} d={d} />
+          ))}
+        </g>
       </g>
+      <path fill="#D97757" transform={`scale(${CLAUDE_SCALE})`} d={CLAUDE_MARK} />
     </svg>
   );
 }
