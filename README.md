@@ -7,6 +7,21 @@ normal Claude Code provider, which keeps using your Anthropic login.
 
 Status: prototype; relies on bb internals (see below).
 
+## Screenshots
+
+**Claude Code (Copilot)** in the model picker, with GPT, Gemini and other
+Copilot models next to the Claude models:
+
+![Model picker for Claude Code (Copilot) listing Gemini and GPT models](docs/models.png)
+
+Settings: GitHub sign-in, copilot-api state and model mapping.
+
+![Claude Copilot provider settings with GitHub account, copilot-api status and model dropdowns](docs/settings.png)
+
+The **Copilot usage** page: copilot-api's token usage dashboard inside bb.
+
+![Copilot usage page with token totals, cost estimate and a usage chart](docs/usage.png)
+
 ## How it works
 
 - **No fork of bb's Claude Code provider.** `server.ts` loads bb's built-in
