@@ -297,6 +297,7 @@ export default async function plugin(bb: BbPluginApi) {
       { name: "ANTHROPIC_DEFAULT_HAIKU_MODEL", value: s.haikuModel, reason: "Copilot model for Haiku and background tasks (plugin setting)" },
       { name: "CLAUDE_CODE_USE_BEDROCK", value: "0", reason: "Use the Anthropic API shape" },
       { name: "CLAUDE_CODE_AUTO_MODE_SERVER", value: "0", reason: "copilot-api has no auto-mode endpoint" },
+      { name: "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", value: "1", reason: "No Anthropic endpoints besides the model (copilot-api)" },
       { name: "DISABLE_NON_ESSENTIAL_MODEL_CALLS", value: "1", reason: "Save Copilot requests" },
       { name: "DISABLE_TELEMETRY", value: "1", reason: "No Anthropic telemetry for Copilot sessions" },
       { name: "DISABLE_ERROR_REPORTING", value: "1", reason: "No Anthropic error reporting for Copilot sessions" },

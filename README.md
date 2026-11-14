@@ -44,7 +44,8 @@ The **Copilot usage** page: copilot-api's token usage dashboard inside bb.
   its `~/.local/share/copilot-api` state and port 4141 are not used.
 - **Thread environment.** `bb.providers.experimental_contributeEnv` gives only
   this provider `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, the Copilot model
-  ids, the `DISABLE_*` flags and plain `claude` as `BB_CLAUDE_CODE_EXECUTABLE`.
+  ids, `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`, the `DISABLE_*` flags and
+  plain `claude` as `BB_CLAUDE_CODE_EXECUTABLE`.
   `experimental_contributeEnvHealth` reports the provider healthy while the
   proxy runs, so no claude.ai login is needed.
 - **Model catalog.** The bridge's model catalog is adjusted on its way to
