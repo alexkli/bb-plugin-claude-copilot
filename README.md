@@ -95,3 +95,7 @@ bb plugin reload claude-copilot
 ```
 
 copilot-api's log: `~/.bb/plugins/claude-copilot/host-data/copilot-api.log`.
+
+## License
+
+MIT
