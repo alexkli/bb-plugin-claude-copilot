@@ -19,10 +19,12 @@ import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import {
   appContract,
+  claudeSessionIdSchema,
   hostContract,
   type AppStatus,
   type CopilotModel,
   type ProxyStatus,
+  type SessionCredits,
   type SettingsView,
 } from "./contract.js";
 import { DASHBOARD_PATHS, SHIM, VIEWER_CSP } from "./dashboard.js";
@@ -440,6 +442,26 @@ export default async function plugin(bb: BbPluginApi) {
     };
   }
 
+  /** Credits a thread's Claude Code session used, from copilot-api's usage log on the thread's host. */
+  async function sessionCredits(threadId: string): Promise<SessionCredits> {
+    try {
+      const thread = await bb.sdk.threads.get({ threadId, include: "environment" });
+      if (thread.providerId !== PROVIDER_ID) return { status: "unsupported" };
+      const environment = "environment" in thread ? thread.environment : null;
+      const hostId = environment?.hostId;
+      if (!hostId) return { status: "error", message: "The thread's machine is not known." };
+      // Identity events only: no prompts, messages or tool output.
+      const events = await bb.sdk.threads.events.list({ threadId, types: ["thread/identity"], order: "desc", limit: "1" });
+      const identity = events.find((e) => e.type === "thread/identity");
+      const parsed = claudeSessionIdSchema.safeParse(identity?.data.providerThreadId);
+      if (!parsed.success) return { status: "pending" };
+      const usage = await host.call("sessionUsage", { sessionId: parsed.data }, { hostId });
+      return { status: "ok", sessionId: parsed.data, usage };
+    } catch (cause) {
+      return { status: "error", message: cause instanceof Error ? cause.message : String(cause) };
+    }
+  }
+
   bb.rpc.register(appContract, {
     status: () => appStatus(),
     startLogin: async () => host.call("startLogin", { pluginDir: PLUGIN_DIR }, { hostId: await primaryHostId() }),
@@ -478,6 +500,7 @@ export default async function plugin(bb: BbPluginApi) {
       return settingsView();
     },
     listInstances: async () => host.call("listInstances", {}, { hostId: await primaryHostId() }),
+    sessionCredits: ({ threadId }) => sessionCredits(threadId),
   });
 
   // -- Usage dashboard -------------------------------------------------------------

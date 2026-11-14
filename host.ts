@@ -36,6 +36,7 @@ import {
   type LoginStatus,
   type ProxyStatus,
   type ReasoningLevel,
+  type SessionUsage,
 } from "./contract.js";
 
 // ---------------------------------------------------------------------------
@@ -771,6 +772,78 @@ function runReader(pluginDir: string, path: string, readerHome: string, db: stri
   });
 }
 
+// -- Per-session usage (composer credits indicator) -------------------------------
+
+const EMPTY_SESSION_USAGE: SessionUsage = {
+  requests: 0,
+  credits: 0,
+  unpriced: 0,
+  inputTokens: 0,
+  outputTokens: 0,
+  models: [],
+  firstAt: null,
+  lastAt: null,
+};
+
+type SqliteDb = import("node:sqlite").DatabaseSync;
+let sessionDb: SqliteDb | null = null;
+
+/** Our copilot-api's usage database, opened read-only once (WAL lets it read while copilot-api writes). */
+async function ownUsageDb(dataDir: string): Promise<SqliteDb | null> {
+  if (sessionDb?.isOpen) return sessionDb;
+  const file = join(dataDir, "copilot-api", DB_FILE);
+  if (!existsSync(file)) return null;
+  const { DatabaseSync } = (await import("node:sqlite")) as typeof import("node:sqlite");
+  sessionDb = new DatabaseSync(file, { readOnly: true });
+  return sessionDb;
+}
+
+/**
+ * Sum of what copilot-api recorded for one Claude Code session. copilot-api
+ * keys rows by the x-claude-code-session-id header (the root session, so
+ * subagent requests count too), which is the thread's providerThreadId.
+ */
+async function sessionUsage(sessionId: string, dataDir: string): Promise<SessionUsage> {
+  let db: SqliteDb | null;
+  try {
+    db = await ownUsageDb(dataDir);
+  } catch {
+    return EMPTY_SESSION_USAGE;
+  }
+  if (!db) return EMPTY_SESSION_USAGE;
+  const num = (value: unknown) => (typeof value === "number" ? value : typeof value === "bigint" ? Number(value) : 0);
+  const rows = db
+    .prepare(
+      `SELECT model,
+              COUNT(*) AS requests,
+              COALESCE(SUM(total_nano_aiu), 0) AS nano,
+              SUM(CASE WHEN total_nano_aiu IS NULL THEN 1 ELSE 0 END) AS unpriced,
+              COALESCE(SUM(input_tokens + cache_read_input_tokens + cache_creation_input_tokens), 0) AS input,
+              COALESCE(SUM(output_tokens), 0) AS output,
+              MIN(created_at_ms) AS first,
+              MAX(created_at_ms) AS last
+         FROM token_usage_events
+        WHERE session_id = ?
+        GROUP BY model
+        ORDER BY nano DESC`,
+    )
+    .all(sessionId) as Record<string, unknown>[];
+  if (rows.length === 0) return EMPTY_SESSION_USAGE;
+  const credits = (nano: unknown) => num(nano) / 1e9;
+  const first = Math.min(...rows.map((r) => num(r.first)));
+  const last = Math.max(...rows.map((r) => num(r.last)));
+  return {
+    requests: rows.reduce((sum, r) => sum + num(r.requests), 0),
+    credits: credits(rows.reduce((sum, r) => sum + num(r.nano), 0)),
+    unpriced: rows.reduce((sum, r) => sum + num(r.unpriced), 0),
+    inputTokens: rows.reduce((sum, r) => sum + num(r.input), 0),
+    outputTokens: rows.reduce((sum, r) => sum + num(r.output), 0),
+    models: rows.map((r) => ({ model: String(r.model ?? ""), requests: num(r.requests), credits: credits(r.nano) })),
+    firstAt: first > 0 ? new Date(first).toISOString() : null,
+    lastAt: last > 0 ? new Date(last).toISOString() : null,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // GitHub sign-in (device flow, driven through copilot-api's own login command)
 
@@ -830,10 +903,12 @@ export default experimental_defineHostEntry({
     loginStatus: async () => login,
     signOut: async (_input, context) => ({ signedOut: await signOut(context) }),
     apiRequest: ({ path }, context) => apiRequest(path, context),
+    sessionUsage: ({ sessionId }, context) => sessionUsage(sessionId, context.experimental_paths.dataDir),
     getConfig: async (_input, context) => ({ json: await getConfig(context) }),
     setConfig: ({ json }, context) => setConfig(json, context),
   },
   dispose: () => {
+    sessionDb?.close();
     child?.kill("SIGTERM");
     loginProc?.kill("SIGTERM");
   },

@@ -66,6 +66,34 @@ export const instanceSchema = z.object({
 });
 export type Instance = z.infer<typeof instanceSchema>;
 
+/** Copilot usage copilot-api recorded for one Claude Code session (subagents included). */
+export const sessionUsageSchema = z.object({
+  requests: z.number().int().nonnegative(),
+  /** AI credits (1 credit = $0.01); copilot-api's total_nano_aiu / 1e9. */
+  credits: z.number().nonnegative(),
+  /** Requests without a reported credit amount (counted, not priced). */
+  unpriced: z.number().int().nonnegative(),
+  inputTokens: z.number().int().nonnegative(),
+  outputTokens: z.number().int().nonnegative(),
+  models: z.array(z.object({ model: z.string(), requests: z.number().int().nonnegative(), credits: z.number().nonnegative() })),
+  firstAt: z.string().nullable(),
+  lastAt: z.string().nullable(),
+});
+export type SessionUsage = z.infer<typeof sessionUsageSchema>;
+
+/** Claude Code session ids are UUIDs. */
+export const claudeSessionIdSchema = z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
+
+export const sessionCreditsSchema = z.discriminatedUnion("status", [
+  /** Not a Claude Code (Copilot) thread: show nothing. */
+  z.object({ status: z.literal("unsupported") }),
+  /** No Claude Code session yet (thread not started). */
+  z.object({ status: z.literal("pending") }),
+  z.object({ status: z.literal("ok"), sessionId: z.string(), usage: sessionUsageSchema }),
+  z.object({ status: z.literal("error"), message: z.string() }),
+]);
+export type SessionCredits = z.infer<typeof sessionCreditsSchema>;
+
 const pluginDirInput = z.object({ pluginDir: z.string().min(1) }).strict();
 
 /** Server <-> host entry. */
@@ -101,6 +129,8 @@ export const hostContract = defineRpcContract({
     input: z.object({ pluginDir: z.string().min(1), instanceId: z.string().min(1), path: z.string().min(1).max(2048) }).strict(),
     output: apiResponseSchema,
   },
+  /** Usage this plugin's copilot-api recorded for one Claude Code session. */
+  sessionUsage: { input: z.object({ sessionId: claudeSessionIdSchema }).strict(), output: sessionUsageSchema },
   /** copilot-api's config.json without the plugin-managed auth keys. */
   getConfig: { input: z.object({}).strict(), output: z.object({ json: z.string() }) },
   setConfig: {
@@ -176,4 +206,6 @@ export const appContract = defineRpcContract({
     output: settingsViewSchema,
   },
   listInstances: { input: z.null(), output: z.object({ instances: z.array(instanceSchema) }) },
+  /** Copilot credits the thread's Claude Code session used so far. */
+  sessionCredits: { input: z.object({ threadId: z.string().min(1).max(200) }).strict(), output: sessionCreditsSchema },
 });

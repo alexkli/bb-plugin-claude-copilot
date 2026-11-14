@@ -6,6 +6,7 @@
 //   model dropdowns (from Copilot's live model list), the wrapped Claude Code
 //   options and the copilot-api config.json editor
 // - usage dashboard page (one tab per local copilot-api instance) + footer button
+// - session credits indicator under the prompt of Copilot threads (session-credits.tsx)
 import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import {
   definePluginApp,
@@ -28,6 +29,7 @@ import type {
 } from "./contract";
 import { CLAUDE_MARK, COPILOT_PATHS } from "./icon-paths";
 import { MESSAGE_FETCH, MESSAGE_RESPONSE, VIRTUAL } from "./dashboard";
+import { SessionCreditsAction, SessionCreditsCompact } from "./session-credits";
 
 const PROVIDER_ID = "claude-copilot";
 const BASE = "/api/v1/plugins/claude-copilot/http";
@@ -634,6 +636,12 @@ export default definePluginApp((app) => {
     icon: COPILOT_ICON,
     path: PANEL_PATH,
     component: UsagePage,
+  });
+  app.composer.customize({
+    id: "session-credits",
+    scopes: ["thread"],
+    actions: [{ id: "session-credits", component: SessionCreditsAction }],
+    banners: [{ id: "session-credits-compact", chrome: "bare", component: SessionCreditsCompact }],
   });
   app.experimental_sidebarFooter.register({
     kind: "disclosure",
