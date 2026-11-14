@@ -66,7 +66,8 @@ The **Copilot usage** page: copilot-api's token usage dashboard inside bb.
   vendored declaration and bridge.
 - **Icon.** The Claude mark and the GitHub Copilot glyph at equal size on a
   diagonal, Claude on top, in color (`app.tsx`; `icons/claude-copilot.svg`
-  is the monochrome fallback). The Claude Copilot ACP provider plugin uses
+  is the monochrome fallback, `icons/claude-copilot-color.svg` and the 256 px
+  `icons/claude-copilot.png` the colored one for the marketplace). The Claude Copilot ACP provider plugin uses
   the same mark in monochrome, so the two are easy to tell apart.
 
 ## In bb
