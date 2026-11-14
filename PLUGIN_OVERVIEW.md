@@ -4,6 +4,7 @@
 - Every Copilot chat model in the model picker: Claude, plus GPT, Gemini, Grok and others through copilot-api's Messages translation.
 - A settings page for GitHub sign-in with a device code, copilot-api start and stop, the default model and reasoning level, and the Copilot models behind Claude Code's opus, sonnet and haiku aliases.
 - A **Copilot usage** page with copilot-api's token and cost dashboard. It also works from bb on a phone.
+- The Copilot credits each thread has used, under the prompt.
 - Your premium-request quota in the Provider usage panel.
 - `bb claude-copilot` commands: status, login, logout, start and stop.
 
