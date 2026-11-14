@@ -22,9 +22,22 @@
   },
   "include": [
     "server.ts",
+    "host.ts",
     "app.tsx",
+    "contract.ts",
+    "dashboard.ts",
+    "settings.ts",
+    "reasoning.ts",
+    "session-credits.tsx",
+    "icon-paths.ts",
     "components",
     "lib",
-    "hooks"
+    "hooks",
+    "test",
+    "vendor/provider-claude-code/server.ts",
+    "vendor/provider-claude-code/src"
+  ],
+  "exclude": [
+    "vendor/provider-claude-code/src/**/*.test.ts"
   ]
 }

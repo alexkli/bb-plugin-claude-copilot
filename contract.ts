@@ -154,7 +154,7 @@ export type AppStatus = z.infer<typeof appStatusSchema>;
 export const settingValueSchema = z.union([z.string().max(10_000), z.number(), z.boolean()]);
 export type SettingValue = z.infer<typeof settingValueSchema>;
 
-/** A serializable copy of a declared setting (the built-in Claude Code ones). */
+/** A serializable copy of a declared setting (the vendored Claude Code provider's). */
 export const settingFieldSchema = z.object({
   key: z.string().min(1),
   type: z.enum(["boolean", "string", "number", "select"]),

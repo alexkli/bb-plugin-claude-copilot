@@ -1,9 +1,11 @@
 // Server side of bb-plugin-claude-copilot.
 //
-// Registers "Claude Code (Copilot)" by running bb's own built-in Claude Code
-// provider plugin (loaded at runtime from the bb install, so it follows bb
-// updates) against a lightly rewritten plugin API:
-//   - provider id/name/icon/strings changed, usage maintenance off,
+// Registers "Claude Code (Copilot)" by running bb's Claude Code provider plugin
+// (vendor/provider-claude-code, copied verbatim from bb; see vendor/UPSTREAM
+// and scripts/sync-upstream.sh) against a lightly rewritten plugin API, so an
+// upstream sync is a folder replace:
+//   - provider id/name/icon/strings changed, usage maintenance off, no
+//     claude.ai guided sign-in or fast mode,
 //     BB_CLAUDE_CODE_EXECUTABLE / CLAUDE_CODE_OAUTH_TOKEN not passed through;
 //   - its provider-usage RPC dropped (it only serves provider-claude-code);
 //   - its settings kept by this plugin (settings.ts) and passed to its
@@ -14,7 +16,7 @@
 // copilot-api when no Copilot thread has run for a while.
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import {
@@ -29,10 +31,10 @@ import {
 } from "./contract.js";
 import { DASHBOARD_PATHS, SHIM, VIEWER_CSP } from "./dashboard.js";
 import { SettingsStore } from "./settings.js";
+import upstream from "./vendor/provider-claude-code/server";
 
 const PROVIDER_ID = "claude-copilot";
 const PROVIDER_NAME = "Claude Code (Copilot)";
-const BUILTIN_ID = "provider-claude-code";
 const OWN_INSTANCE_ID = "plugin";
 
 /** This plugin's root: the nearest folder up from the bundle with our package.json. */
@@ -47,17 +49,8 @@ function findPluginDir(): string {
 }
 const PLUGIN_DIR = findPluginDir();
 
-function builtinServerPath(): string {
-  const candidates = [
-    process.argv[1] ? join(dirname(process.argv[1]), "builtin-plugins", BUILTIN_ID, "dist", "server.js") : null,
-    `/Applications/bb.app/Contents/Resources/app.asar.unpacked/node_modules/bb-app/server/dist/builtin-plugins/${BUILTIN_ID}/dist/server.js`,
-  ];
-  for (const candidate of candidates) if (candidate && existsSync(candidate)) return candidate;
-  throw new Error(`claude-copilot: bb's built-in ${BUILTIN_ID} server bundle was not found.`);
-}
-
 // ---------------------------------------------------------------------------
-// Wrapping the built-in provider plugin
+// Wrapping the vendored Claude Code provider plugin
 
 type ProviderDeclaration = Parameters<BbPluginApi["providers"]["register"]>[0];
 type DeriveContext = { settings: Record<string, unknown> } & Record<string, unknown>;
@@ -65,6 +58,8 @@ type DeriveContext = { settings: Record<string, unknown> } & Record<string, unkn
 function rewriteDeclaration(declaration: ProviderDeclaration, settings: SettingsStore): ProviderDeclaration {
   const d = { ...(declaration as unknown as Record<string, unknown>) };
   delete d.internal_DO_NOT_USE_guidedSignIn; // that flow signs in to claude.ai
+  delete d.serviceTiers; // fast mode is an Anthropic API service tier
+  const capabilities = (d.capabilities ?? {}) as Record<string, unknown>;
   const strings = (d.strings ?? {}) as Record<string, unknown>;
   const maintenance = (d.maintenance ?? {}) as Record<string, unknown>;
   const env = (d.env ?? {}) as { passthrough?: string[] };
@@ -83,13 +78,14 @@ function rewriteDeclaration(declaration: ProviderDeclaration, settings: Settings
     // Claude Code's usage check reads the claude.ai subscription, which is not
     // what this provider spends; the plugin publishes its own usage card.
     maintenance: { ...maintenance, usage: false },
+    capabilities: { ...capabilities, supportsServiceTier: false },
     env: {
       ...env,
       passthrough: (env.passthrough ?? []).filter(
         (name) => name !== "BB_CLAUDE_CODE_EXECUTABLE" && name !== "CLAUDE_CODE_OAUTH_TOKEN",
       ),
     },
-    // The built-in reads its settings only here; give it the plugin-kept values.
+    // Upstream reads its settings only here; give it the plugin-kept values.
     ...(derive ? { deriveProviderOptions: (ctx: DeriveContext) => derive({ ...ctx, settings: { ...ctx.settings, ...settings.claudeValues() } }) } : {}),
   } as unknown as ProviderDeclaration;
 }
@@ -104,15 +100,15 @@ function bindAll<T extends object>(target: T, overrides: Record<string | symbol,
   });
 }
 
-/** Run the built-in provider plugin against a rewritten API. */
-async function registerWrappedProvider(bb: BbPluginApi, settings: SettingsStore): Promise<void> {
+/** Run the vendored provider plugin against a rewritten API. */
+function registerWrappedProvider(bb: BbPluginApi, settings: SettingsStore): void {
   const wrapped = bindAll(bb, {
     providers: bindAll(bb.providers, {
       register: (declaration: ProviderDeclaration) => bb.providers.register(rewriteDeclaration(declaration, settings)),
     }),
-    rpc: bindAll(bb.rpc, { register: () => {} }), // the built-in's provider-usage source; not ours
+    rpc: bindAll(bb.rpc, { register: () => {} }), // upstream's claude.ai usage source; not ours
     settings: bindAll(bb.settings, {
-      // Keep the built-in's settings ourselves (rendered by our section).
+      // Keep upstream's settings ourselves (rendered by our section).
       define: (descriptors: Record<string, unknown>) => {
         settings.setClaudeDescriptors(descriptors);
         return {
@@ -130,12 +126,7 @@ async function registerWrappedProvider(bb: BbPluginApi, settings: SettingsStore)
       },
     }),
   });
-  // A query string gives this plugin its own module instance, separate from
-  // the one bb runs for the real Claude Code provider.
-  const builtin = (await import(`${pathToFileURL(builtinServerPath()).href}?instance=${PROVIDER_ID}`)) as {
-    default: (bb: BbPluginApi) => unknown;
-  };
-  await builtin.default(wrapped);
+  upstream(wrapped);
 }
 
 // ---------------------------------------------------------------------------
@@ -254,7 +245,7 @@ function usageWindows(usage: CopilotUsage): z.infer<typeof usageWindow>[] {
 export default async function plugin(bb: BbPluginApi) {
   const settings = new SettingsStore(bb);
   await settings.load();
-  await registerWrappedProvider(bb, settings);
+  registerWrappedProvider(bb, settings);
   const host = bb.hosts.experimental_client({ contract: hostContract });
 
   const ensure = async (hostId: string): Promise<ProxyStatus> => {

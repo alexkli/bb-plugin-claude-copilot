@@ -4,9 +4,10 @@
 //
 // Two groups, persisted in bb.storage.kv:
 // - copilot: this plugin's own settings (models, reasoning, idle stop);
-// - claude: the wrapped built-in Claude Code provider's settings. Their
-//   descriptors come from the built-in at load time (so new ones from bb
-//   updates appear), and their values reach it through deriveProviderOptions.
+// - claude: the settings of the wrapped Claude Code provider
+//   (vendor/provider-claude-code). Their descriptors come from it at load time
+//   (so new ones from an upstream sync appear), and their values reach it
+//   through deriveProviderOptions.
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import {
   copilotSettingsSchema,

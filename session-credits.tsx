@@ -102,10 +102,7 @@ function Details({ usage, sessionId }: { usage: SessionUsage; sessionId: string 
   );
 }
 
-function CreditControl() {
-  const composer = useComposer();
-  const threadId = composer.scope.kind === "thread" ? composer.scope.threadId : null;
-  const credits = useSessionCredits(threadId);
+function CreditControl({ credits }: { credits: SessionCredits }) {
   const [open, setOpen] = useState(false);
   const button = useRef<HTMLButtonElement>(null);
   const panel = useRef<HTMLDivElement>(null);
@@ -133,7 +130,7 @@ function CreditControl() {
     };
   }, [open]);
 
-  if (!credits || credits.status === "unsupported") return null;
+  if (credits.status === "unsupported") return null;
   const usage = credits.status === "ok" ? credits.usage : null;
   const label = usage ? formatCredits(usage.credits) : "–";
   const title =
@@ -194,6 +191,24 @@ function CreditControl() {
 // the regular composer action slot when the footer does not look as expected.
 // Replace this when bb adds a footer slot.
 
+// Several plugins may put their container in front of the context-window
+// button (or at the end of the group while bb shows no button). A container
+// counts as placed when only other plugins' containers stand between it and
+// the button, so containers never move each other, but bb's own controls that
+// mount later (session options, permission selector) can't end up after it.
+// One that has to be moved over and over anyway (another plugin fighting for
+// the exact spot) gives up and renders in place, so the page can never loop.
+const MAX_MOVES = 20;
+const MOVE_WINDOW_MS = 2000;
+
+/** Whether only plugin containers stand between `node` and `end` (null: the end of its parent). */
+function onlyPluginRootsUntil(node: Node, end: Element | null): boolean {
+  for (let next = node.nextSibling; next !== end; next = next.nextSibling) {
+    if (!(next instanceof Element) || !next.hasAttribute("data-bb-plugin-root")) return false;
+  }
+  return true;
+}
+
 function attachFooterTarget(anchor: HTMLElement | null, change: (target: HTMLElement | null) => void): () => void {
   const root = anchor?.closest("[data-app-composer]");
   if (!anchor || !root) {
@@ -201,8 +216,16 @@ function attachFooterTarget(anchor: HTMLElement | null, change: (target: HTMLEle
     return () => {};
   }
   let host: HTMLElement | null = null;
+  let moves: number[] = [];
+  let gaveUp = false;
   const ours = (el: Element) => el.closest("[data-app-composer]") === root;
+  const detach = () => {
+    host?.remove();
+    host = null;
+    change(null);
+  };
   const sync = () => {
+    if (gaveUp) return;
     const footers = Array.from(root.querySelectorAll("[data-follow-up-composer-footer]")).filter(ours);
     const footer = footers.length === 1 ? footers[0]! : null;
     const group = footer?.lastElementChild ?? null;
@@ -216,19 +239,24 @@ function attachFooterTarget(anchor: HTMLElement | null, change: (target: HTMLEle
       group.classList.contains("items-center") &&
       buttons.length <= 1 &&
       (!button || button.parentNode === group);
-    if (!valid) {
-      host?.remove();
-      host = null;
-      change(null);
-      return;
-    }
+    if (!valid) return detach();
     if (!host) {
       host = anchor.ownerDocument.createElement("span");
       host.setAttribute("data-bb-plugin-root", "");
       host.setAttribute("data-bb-plugin", "claude-copilot");
       host.style.display = "contents";
     }
-    if (host.parentNode !== group || (button && host.nextSibling !== button)) group.insertBefore(host, button);
+    const placed = host.parentNode === group && onlyPluginRootsUntil(host, button);
+    if (!placed) {
+      const now = Date.now();
+      moves = [...moves.filter((t) => now - t < MOVE_WINDOW_MS), now];
+      if (moves.length > MAX_MOVES) {
+        gaveUp = true;
+        observer.disconnect();
+        return detach();
+      }
+      group.insertBefore(host, button);
+    }
     change(host);
   };
   const observer = new MutationObserver(sync);
@@ -240,7 +268,16 @@ function attachFooterTarget(anchor: HTMLElement | null, change: (target: HTMLEle
   };
 }
 
+/** Attaches to bb's composer footer only on this provider's threads; elsewhere renders nothing. */
 function CreditPlacement() {
+  const composer = useComposer();
+  const threadId = composer.scope.kind === "thread" ? composer.scope.threadId : null;
+  const credits = useSessionCredits(threadId);
+  if (!credits || credits.status === "unsupported") return null;
+  return <FooterPlacement credits={credits} />;
+}
+
+function FooterPlacement({ credits }: { credits: SessionCredits }) {
   const anchor = useRef<HTMLSpanElement>(null);
   // undefined: not measured yet; null: no footer, render in place
   const [target, setTarget] = useState<HTMLElement | null>();
@@ -248,7 +285,7 @@ function CreditPlacement() {
   return (
     <>
       <span hidden ref={anchor} />
-      {target ? createPortal(<CreditControl />, target) : target === null ? <CreditControl /> : null}
+      {target ? createPortal(<CreditControl credits={credits} />, target) : target === null ? <CreditControl credits={credits} /> : null}
     </>
   );
 }

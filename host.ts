@@ -2,18 +2,17 @@
 //
 // 1. Runs an embedded copilot-api (the plugin's own pinned copy, its own
 //    COPILOT_API_HOME, port and gateway key) under bb's Node.
-// 2. Re-exports bb's built-in Claude Code provider bridge (loaded at runtime
-//    from bb's host-artifact cache, so it follows bb updates) for the
-//    claude-copilot provider.
-// 3. Delegates resolveNativeRoots to the built-in host entry.
+// 2. Wraps the provider bridge of bb's Claude Code provider
+//    (vendor/provider-claude-code) for the claude-copilot provider, adding
+//    copilot-api's models to its model catalog.
+// 3. Serves upstream's host handlers (resolveNativeRoots) next to its own.
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { appendFile, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { homedir } from "node:os";
-import { delimiter, dirname, join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { delimiter, dirname, join, sep } from "node:path";
 import {
   experimental_defineHostEntry,
   type ExperimentalHostRpcContext,
@@ -22,8 +21,8 @@ import {
 import {
   experimental_defineProviderBridge,
   type ProviderBridgeContext,
-  type ProviderBridgeEntry,
 } from "@get-bb/plugin-sdk/provider-bridge";
+import upstreamHost, { experimental_providerBridge as upstreamBridge } from "./vendor/provider-claude-code/src/host";
 import {
   catalogFileSchema,
   copilotModelSchema,
@@ -40,63 +39,9 @@ import {
 } from "./contract.js";
 
 // ---------------------------------------------------------------------------
-// Locating bb's built-in Claude Code host artifact
+// Provider bridge: upstream's, with this provider's model catalog.
 
-const BUILTIN_ID = "provider-claude-code";
-
-/** ~/.bb from one of this plugin's data dirs (<root>/plugins/<id>/<kind>). */
-function bbDataRoot(pluginDataDir: string): string {
-  return dirname(dirname(dirname(pluginDataDir)));
-}
-
-function findBuiltinHostModule(pluginDataDir: string): string {
-  const candidates: { path: string; mtime: number }[] = [];
-  const cache = join(bbDataRoot(pluginDataDir), "plugin-host-artifacts", BUILTIN_ID);
-  if (existsSync(cache)) {
-    for (const digest of readdirSync(cache)) {
-      const file = join(cache, digest, "host.mjs");
-      if (existsSync(file)) candidates.push({ path: file, mtime: statSync(file).mtimeMs });
-    }
-  }
-  candidates.sort((a, b) => b.mtime - a.mtime);
-  if (candidates[0]) return candidates[0].path;
-  // Fallback: the copy inside a local bb app install.
-  const bridgeDir = process.env.BB_BRIDGE_DIR;
-  const appCopy = bridgeDir
-    ? join(bridgeDir, "..", "..", "server", "dist", "builtin-plugins", BUILTIN_ID, "dist", "host.js")
-    : null;
-  if (appCopy && existsSync(appCopy)) return appCopy;
-  throw new Error(
-    `claude-copilot: bb's built-in Claude Code host artifact was not found under ${cache}. ` +
-      "Run one normal Claude Code thread on this machine so bb delivers it, then retry.",
-  );
-}
-
-type BuiltinModule = {
-  default?: { handlers?: Record<string, (input: unknown, ctx: unknown) => unknown> };
-  experimental_providerBridge?: ProviderBridgeEntry;
-};
-let builtinPromise: Promise<BuiltinModule> | null = null;
-function loadBuiltin(pluginDataDir: string): Promise<BuiltinModule> {
-  builtinPromise ??= import(pathToFileURL(findBuiltinHostModule(pluginDataDir)).href) as Promise<BuiltinModule>;
-  return builtinPromise;
-}
-
-// ---------------------------------------------------------------------------
-// Provider bridge: forward to the built-in one once it has loaded.
-
-let realBridge: ProviderBridgeEntry | null = null;
-let pending: string[] = [];
-let pendingEvents: ("close" | "sigterm" | "sigint")[] = [];
-
-function flushEvent(event: "close" | "sigterm" | "sigint") {
-  if (!realBridge) return void pendingEvents.push(event);
-  if (event === "close") realBridge.onClose?.();
-  else if (event === "sigterm") realBridge.onSigterm?.();
-  else realBridge.onSigint?.();
-}
-
-// Model catalog for this provider. The built-in bridge reports Claude Code's
+// Model catalog for this provider. Upstream's bridge reports Claude Code's
 // own catalog: only Anthropic models, "high" as every model's default
 // reasoning, and Claude Code's "default" entry (its account default, not
 // ANTHROPIC_MODEL) as the default model. On the way to bb we add copilot-api's
@@ -141,7 +86,7 @@ function catalogEntry(model: CopilotModel, catalog: CatalogFile): Record<string,
     ? catalog.defaultReasoning
     : efforts.includes("medium")
       ? "medium"
-      : (efforts[0] ?? "low"); // bb requires a value; the built-in uses "low" for models without efforts
+      : (efforts[0] ?? "low"); // bb requires a value; upstream uses "low" for models without efforts
   const description = [
     model.displayName,
     model.vendor,
@@ -238,33 +183,12 @@ function patchStdout(): void {
 }
 
 export const experimental_providerBridge = experimental_defineProviderBridge({
+  ...upstreamBridge,
   start(context: ProviderBridgeContext) {
     bridgeDataDir = context.dataDir;
     patchStdout();
-    loadBuiltin(context.dataDir).then(
-      (mod) => {
-        const bridge = mod.experimental_providerBridge;
-        if (!bridge) throw new Error("built-in host artifact has no experimental_providerBridge export");
-        realBridge = bridge;
-        bridge.start?.(context);
-        for (const line of pending) bridge.handleLine(line);
-        pending = [];
-        for (const event of pendingEvents) flushEvent(event);
-        pendingEvents = [];
-      },
-      (error: unknown) => {
-        process.stderr.write(`claude-copilot: could not load the Claude Code bridge: ${String(error)}\n`);
-        process.exit(1);
-      },
-    );
+    upstreamBridge.start?.(context);
   },
-  handleLine(line) {
-    if (realBridge) realBridge.handleLine(line);
-    else pending.push(line);
-  },
-  onClose: () => flushEvent("close"),
-  onSigterm: () => flushEvent("sigterm"),
-  onSigint: () => flushEvent("sigint"),
 });
 
 // ---------------------------------------------------------------------------
@@ -679,7 +603,11 @@ async function listInstances(dataDir: string): Promise<Instance[]> {
   const instances: Instance[] = [{ id: OWN_INSTANCE_ID, label: "bb plugin", home: ownHome, own: true, port: portOf(ownHome) }];
   const homes = new Set<string>([defaultHome(), ...running.map((r) => r.home)]);
   homes.delete(ownHome);
+  // Other bb plugins' own copilot-api (e.g. the Claude Copilot / Claude Copilot
+  // ACP sibling) belongs to that plugin's usage page, not this one.
+  const pluginsRoot = dirname(dirname(dataDir)) + sep;
   for (const home of homes) {
+    if (home.startsWith(pluginsRoot)) continue;
     if (!existsSync(join(home, DB_FILE))) continue;
     const port = portOf(home);
     const label = home === defaultHome() ? "copilot-api (default home)" : `copilot-api ${tildify(home)}`;
@@ -887,12 +815,7 @@ async function startLogin(pluginDir: string, context: ExperimentalHostRpcContext
 export default experimental_defineHostEntry({
   contract: hostContract,
   handlers: {
-    async resolveNativeRoots(input, context) {
-      const mod = await loadBuiltin(context.experimental_paths.dataDir);
-      const handler = mod.default?.handlers?.resolveNativeRoots;
-      if (!handler) return { skills: [], commands: [] };
-      return (await handler({ ...input, providerId: "claude-code" }, context)) as never;
-    },
+    ...upstreamHost.handlers,
     ensureProxy: ({ pluginDir, catalog }, context) => ensureProxy(pluginDir, catalog, context),
     models: async (_input, context) => ({ models: await listModels(context) }),
     listInstances: async (_input, context) => ({ instances: await listInstances(context.experimental_paths.dataDir) }),

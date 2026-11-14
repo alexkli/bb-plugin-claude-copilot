@@ -1,0 +1,87 @@
+# Weekly: when bb has a newer desktop release whose built-in Claude Code
+# provider changed, re-vendor it (scripts/sync-upstream.sh), run the tests and
+# the type check, and open a pull request with the result. Review the upstream
+# diff before merging; permission and security fixes should go out promptly.
+name: Sync bb's Claude Code provider
+
+on:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "bb release tag (default: latest desktop-v*)"
+        required: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Find the bb release to sync to
+        id: target
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          current=$(sed -n 's/^tag: //p' vendor/UPSTREAM)
+          latest=${INPUT_TAG:-$(git ls-remote --tags --refs https://github.com/get-bb/bb.git 'desktop-v*' \
+            | sed 's#.*refs/tags/##' | grep -E '^desktop-v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)}
+          echo "current=$current latest=$latest"
+          echo "current=$current" >>"$GITHUB_OUTPUT"
+          echo "latest=$latest" >>"$GITHUB_OUTPUT"
+
+      - name: Re-vendor
+        if: steps.target.outputs.latest != steps.target.outputs.current
+        run: scripts/sync-upstream.sh "${{ steps.target.outputs.latest }}"
+
+      - name: Check for changes
+        id: diff
+        run: |
+          if git diff --quiet -- vendor/provider-claude-code; then
+            echo "changed=false" >>"$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >>"$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-node@v4
+        if: steps.diff.outputs.changed == 'true'
+        with:
+          node-version: 22
+
+      - name: Test
+        id: test
+        if: steps.diff.outputs.changed == 'true'
+        continue-on-error: true
+        run: |
+          npm ci --omit=optional
+          npm run typecheck
+          npm test
+
+      - name: Open a pull request
+        if: steps.diff.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.target.outputs.latest }}
+          FROM: ${{ steps.target.outputs.current }}
+          TESTS: ${{ steps.test.outcome }}
+        run: |
+          branch="sync/$TAG"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          git add vendor
+          git commit -m "Sync bb's Claude Code provider to $TAG"
+          git push -f origin "$branch"
+          upstream_commit=$(sed -n 's/^commit: //p' vendor/UPSTREAM)
+          body="Re-vendors \`plugins/provider-claude-code\` from bb \`$FROM\` to \`$TAG\` (get-bb/bb@$upstream_commit).
+
+          Tests and type check: **$TESTS**.
+
+          Before merging: read the upstream diff, compare the upstream \`server.ts\` and \`src/host.ts\` with this plugin's overlay, and check the dependency ranges the sync script printed against \`package.json\`."
+          gh pr create --title "Sync bb's Claude Code provider to $TAG" --body "$body" --head "$branch" \
+            || gh pr edit "$branch" --body "$body"

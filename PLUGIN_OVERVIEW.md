@@ -17,6 +17,6 @@ The plugin runs its own copy of copilot-api (https://github.com/caozhiyuan/copil
 - Claude Code, with `claude` on PATH
 - bb 0.49 or later
 
-## Caveat
+## Based on bb's Claude Code provider
 
-The plugin reuses bb's built-in Claude Code provider by loading it from the bb install. That is not public plugin API, so a bb update can break the plugin until it is updated.
+The plugin contains a copy of bb's own Claude Code provider (MIT), so Copilot threads get the same features as normal Claude Code threads. It uses only public plugin API. A weekly job picks up changes to that provider from new bb releases.
