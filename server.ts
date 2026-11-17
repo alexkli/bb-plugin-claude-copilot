@@ -22,13 +22,14 @@ import { z } from "zod";
 import {
   appContract,
   claudeSessionIdSchema,
-  hostContract,
+  sessionCreditsTag,
   type AppStatus,
   type CopilotModel,
   type ProxyStatus,
   type SessionCredits,
   type SettingsView,
 } from "./contract.js";
+import { hostContract } from "./host-contract.js";
 import { DASHBOARD_PATHS, SHIM, VIEWER_CSP } from "./dashboard.js";
 import { SettingsStore } from "./settings.js";
 import upstream from "./vendor/provider-claude-code/server";
@@ -241,6 +242,22 @@ function usageWindows(usage: CopilotUsage): z.infer<typeof usageWindow>[] {
 }
 
 // ---------------------------------------------------------------------------
+
+/** How often a watched thread's credits are read again (only while a window shows them). */
+const CREDITS_POLL_MS = 5000;
+
+function sleep(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal.aborted) return resolve();
+    const timer = setTimeout(done, ms);
+    function done() {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", done);
+      resolve();
+    }
+    signal.addEventListener("abort", done, { once: true });
+  });
+}
 
 export default async function plugin(bb: BbPluginApi) {
   const settings = new SettingsStore(bb);
@@ -495,6 +512,24 @@ export default async function plugin(bb: BbPluginApi) {
     },
     listInstances: async () => host.call("listInstances", {}, { hostId: await primaryHostId() }),
     sessionCredits: ({ threadId }) => sessionCredits(threadId),
+  });
+
+  // While a window shows a thread's credits, read them again every few seconds
+  // and refresh the app's read when they change; stop for other providers'
+  // threads (a thread's provider never changes). The app itself doesn't poll.
+  bb.rpc.experimental_whileWatched("sessionCredits", async (read, signal) => {
+    if (!("input" in read)) return;
+    const threadId = (read.input as { threadId?: unknown } | null)?.threadId;
+    if (typeof threadId !== "string") return;
+    let last = "";
+    while (!signal.aborted) {
+      const credits = await sessionCredits(threadId);
+      if (credits.status === "unsupported") return;
+      const json = JSON.stringify(credits);
+      if (last !== "" && json !== last) bb.rpc.experimental_invalidate([sessionCreditsTag(threadId)]);
+      last = json;
+      await sleep(CREDITS_POLL_MS, signal);
+    }
   });
 
   // -- Usage dashboard -------------------------------------------------------------

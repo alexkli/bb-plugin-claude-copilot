@@ -95,6 +95,18 @@ The **Copilot usage** page: copilot-api's token usage dashboard inside bb.
   `copilot-api.sqlite`; other instances are read from a read-only snapshot
   (`VACUUM INTO`) with copilot-api's own query code (`usage-reader.mjs`).
   Subscriptions/quota data comes from GitHub and is the same for all.
+- **Copilot credits under the prompt**: the Copilot AI credits the thread's
+  Claude Code session has used so far, as copilot-api recorded them (keyed by
+  Claude Code's session id), next to bb's context-window control. Only on
+  Claude Code (Copilot) threads. Click it for the breakdown: requests, tokens in and out, and credits per
+  model. While a window shows it, the plugin checks the session's usage every
+  5 seconds and updates the value when it changes; the window itself doesn't
+  poll. bb has no plugin slot in that row yet, so the plugin moves its own
+  element there and depends on bb's composer layout: if a bb update changes
+  that layout, the credits show in the composer's action row instead (before
+  the voice and send buttons). On phones and narrow panes they show in a line
+  above the composer. The plugin removes its element and observer when the
+  composer goes away.
 - **Provider usage card**: the Copilot premium-request quota (percent used,
   reset date; the expanded row shows used / entitled AI credits in dollars,
   1 credit = $0.01). Background polls never start an idle copilot-api; they show

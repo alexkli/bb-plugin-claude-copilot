@@ -27,7 +27,6 @@ import { addGatewayKey, readGateway, withGatewayKey } from "./gateway-key.js";
 import {
   catalogFileSchema,
   copilotModelSchema,
-  hostContract,
   REASONING_LEVELS,
   type ApiResponse,
   type CatalogFile,
@@ -38,6 +37,7 @@ import {
   type ReasoningLevel,
   type SessionUsage,
 } from "./contract.js";
+import { hostContract } from "./host-contract.js";
 
 // ---------------------------------------------------------------------------
 // Provider bridge: upstream's, with this provider's model catalog.

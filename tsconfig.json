@@ -24,6 +24,7 @@
     "server.ts",
     "host.ts",
     "gateway-key.ts",
+    "host-contract.ts",
     "app.tsx",
     "contract.ts",
     "dashboard.ts",

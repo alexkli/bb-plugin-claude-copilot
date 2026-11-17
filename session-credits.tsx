@@ -1,49 +1,26 @@
 // Composer indicator: Copilot AI credits the thread's Claude Code session has
 // used so far, as copilot-api recorded them. Shown under the prompt next to
 // bb's context-window control when that footer is found, otherwise as a
-// regular composer action. Only on Claude Code (Copilot) threads.
+// regular composer action. Only on Claude Code (Copilot) threads. The same
+// component is in the Claude Copilot ACP provider plugin.
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { useComposer, useRealtimeConnectionState, useRpc } from "@get-bb/plugin-sdk/app";
-import type { appContract, SessionCredits, SessionUsage } from "./contract";
+import { experimental_useRpcQuery, useComposer } from "@get-bb/plugin-sdk/app";
+import { appContract, type SessionCredits, type SessionUsage } from "./contract";
 
-const POLL_MS = 5000;
 const DOLLARS_PER_CREDIT = 0.01;
 
+// The read comes from bb's shared RPC query cache. While a window shows it, the
+// server watches the thread's usage and invalidates the read when it changes
+// (server.ts, sessionCredits), so the app doesn't poll.
 function useSessionCredits(threadId: string | null): SessionCredits | null {
-  const rpc = useRpc<typeof appContract>();
-  const connection = useRealtimeConnectionState();
-  const [state, setState] = useState<{ threadId: string; value: SessionCredits } | null>(null);
-  useEffect(() => {
-    if (!threadId) return;
-    let alive = true;
-    let busy = false;
-    let timer: ReturnType<typeof setInterval> | undefined;
-    const refresh = async () => {
-      if (busy || document.hidden) return;
-      busy = true;
-      try {
-        const value = await rpc.call("sessionCredits", { threadId });
-        if (!alive) return;
-        setState({ threadId, value });
-        // A thread's provider never changes: stop polling other providers' threads.
-        if (value.status === "unsupported") clearInterval(timer);
-      } catch {
-        // keep the last value; the next poll retries
-      } finally {
-        busy = false;
-      }
-    };
-    void refresh();
-    timer = setInterval(refresh, POLL_MS);
-    document.addEventListener("visibilitychange", refresh);
-    return () => {
-      alive = false;
-      clearInterval(timer);
-      document.removeEventListener("visibilitychange", refresh);
-    };
-  }, [threadId, rpc, connection]);
-  return state?.threadId === threadId ? state.value : null;
+  const query = experimental_useRpcQuery({
+    contract: appContract,
+    method: "sessionCredits",
+    input: { threadId: threadId ?? "" },
+    enabled: threadId !== null,
+  });
+  return threadId === null ? null : (query.data ?? null);
 }
 
 function formatCredits(credits: number): string {
