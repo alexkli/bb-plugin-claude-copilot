@@ -1,6 +1,6 @@
 // Frontend of bb-plugin-claude-copilot:
-// - provider icon for "Claude Code (Copilot)": the orange Claude mark and the
-//   GitHub Copilot glyph at equal size on a diagonal, Claude on top; keep in
+// - provider icon for "Claude Code (Copilot)": the Claude mark and the
+//   GitHub Copilot glyph, both in Claude orange, at equal size on a diagonal, Claude on top; keep in
 //   sync with icons/claude-copilot.svg
 // - settings section: GitHub sign-in and copilot-api status first, then the
 //   model dropdowns (from Copilot's live model list), the wrapped Claude Code
@@ -63,9 +63,9 @@ function ClaudeCopilotIcon({ className }: { className?: string }) {
           />
         </mask>
       </defs>
-      {/* Copilot glyph in the theme's text colour */}
+      {/* Copilot glyph in Claude orange too, so the icon reads as one colored mark */}
       <g mask={`url(#${mask})`}>
-        <g transform="translate(600 540) scale(12.5)" fill="currentColor">
+        <g transform="translate(600 540) scale(12.5)" fill="#D97757">
           {COPILOT_PATHS.map((d) => (
             <path key={d.slice(0, 16)} d={d} />
           ))}
