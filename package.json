@@ -1,6 +1,6 @@
 {
   "name": "bb-plugin-claude-copilot",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Run Claude Code threads on your GitHub Copilot subscription, including the GPT, Gemini and Grok models Copilot offers.",
   "keywords": [
     "bb-plugin",
