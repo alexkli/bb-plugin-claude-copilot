@@ -290,7 +290,9 @@ export default async function plugin(bb: BbPluginApi) {
     const oneM = list.filter((m) => m.id.endsWith("[1m]") && m.inputLimit !== null).map((m) => m.inputLimit as number);
     const entries = [
       { name: "ANTHROPIC_BASE_URL", value: `http://127.0.0.1:${status.port}`, reason: "Route Claude Code through the plugin's copilot-api" },
-      { name: "ANTHROPIC_AUTH_TOKEN", value: status.apiKey, reason: "Gateway key of the plugin's copilot-api" },
+      // no ANTHROPIC_AUTH_TOKEN: bb records contributed values in each thread's
+      // events, so the provider bridge adds the gateway key on the host
+      // (gateway-key.ts)
       { name: "ANTHROPIC_MODEL", value: s.defaultModel, reason: "Default model (plugin setting)" },
       { name: "ANTHROPIC_DEFAULT_OPUS_MODEL", value: s.opusModel, reason: "Copilot model for Opus (plugin setting)" },
       { name: "ANTHROPIC_DEFAULT_SONNET_MODEL", value: s.sonnetModel, reason: "Copilot model for Sonnet (plugin setting)" },

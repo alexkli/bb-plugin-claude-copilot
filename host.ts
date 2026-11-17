@@ -23,6 +23,7 @@ import {
   type ProviderBridgeContext,
 } from "@get-bb/plugin-sdk/provider-bridge";
 import upstreamHost, { experimental_providerBridge as upstreamBridge } from "./vendor/provider-claude-code/src/host";
+import { addGatewayKey, readGateway, withGatewayKey } from "./gateway-key.js";
 import {
   catalogFileSchema,
   copilotModelSchema,
@@ -182,19 +183,43 @@ function patchStdout(): void {
   }) as typeof process.stdout.write;
 }
 
+const hostDataDir = () => (bridgeDataDir === null ? null : join(dirname(bridgeDataDir), "host-data"));
+
 export const experimental_providerBridge = experimental_defineProviderBridge({
   ...upstreamBridge,
   start(context: ProviderBridgeContext) {
     bridgeDataDir = context.dataDir;
     patchStdout();
+    const dir = hostDataDir();
+    if (dir !== null) addGatewayKey(process.env, readGateway(dir));
     upstreamBridge.start?.(context);
+  },
+  // the gateway key goes into each command's environment here, on the host
+  // (see gateway-key.ts); read per line, so a new key applies right away
+  handleLine(line: string) {
+    const dir = hostDataDir();
+    const gateway = dir === null || !line.includes('"envVars"') ? null : readGateway(dir);
+    addGatewayKey(process.env, gateway);
+    upstreamBridge.handleLine(withGatewayKey(line, gateway));
   },
 });
 
 // ---------------------------------------------------------------------------
 // copilot-api
 
-type ProxyState = { port: number; apiKey: string; adminKey: string };
+/**
+ * keyVersion 2: keys made after 0.1.1 stopped passing the gateway key through
+ * bb's provider environment; older keys are in bb's thread events and are
+ * replaced once.
+ */
+type ProxyState = { port: number; apiKey: string; adminKey: string; keyVersion?: number };
+const KEY_VERSION = 2;
+
+const newKeys = () => ({
+  apiKey: `bbcc-${randomBytes(24).toString("hex")}`,
+  adminKey: `bbcc-admin-${randomBytes(24).toString("hex")}`,
+  keyVersion: KEY_VERSION,
+});
 
 let child: ChildProcess | null = null;
 let lease: ExperimentalHostWorkerLease | null = null;
@@ -229,6 +254,19 @@ async function freePort(): Promise<number> {
   });
 }
 
+/** Waits up to 5 s until nothing listens on the port any more. */
+async function waitForPortFree(port: number): Promise<void> {
+  for (let i = 0; i < 20; i++) {
+    const free = await new Promise<boolean>((resolve) => {
+      const server = createServer();
+      server.once("error", () => resolve(false));
+      server.listen(port, "127.0.0.1", () => server.close(() => resolve(true)));
+    });
+    if (free) return;
+    await new Promise((r) => setTimeout(r, 250));
+  }
+}
+
 async function readJson<T>(file: string): Promise<T | null> {
   try {
     return JSON.parse(await readFile(file, "utf8")) as T;
@@ -237,18 +275,27 @@ async function readJson<T>(file: string): Promise<T | null> {
   }
 }
 
-async function prepareHome(dataDir: string): Promise<{ home: string; state: ProxyState }> {
+// one at a time: a key rotation must not run twice
+let preparing: Promise<unknown> = Promise.resolve();
+function prepareHome(dataDir: string): Promise<{ home: string; state: ProxyState }> {
+  const run = preparing.then(() => prepareHomeNow(dataDir));
+  preparing = run.catch(() => {});
+  return run;
+}
+
+async function prepareHomeNow(dataDir: string): Promise<{ home: string; state: ProxyState }> {
   const home = join(dataDir, "copilot-api");
   await mkdir(home, { recursive: true });
   const stateFile = join(dataDir, "proxy.json");
   let state = await readJson<ProxyState>(stateFile);
+  let rotated = false;
   if (!state) {
-    state = {
-      port: await freePort(),
-      apiKey: `bbcc-${randomBytes(24).toString("hex")}`,
-      adminKey: `bbcc-admin-${randomBytes(24).toString("hex")}`,
-    };
+    state = { port: await freePort(), ...newKeys() };
     await writeFile(stateFile, JSON.stringify(state, null, 2), { mode: 0o600 });
+  } else if (state.keyVersion !== KEY_VERSION) {
+    state = { ...state, ...newKeys() };
+    await writeFile(stateFile, JSON.stringify(state, null, 2), { mode: 0o600 });
+    rotated = true;
   }
   // Lock the gateway to our key; keep any other settings the user adds.
   const configFile = join(home, "config.json");
@@ -258,6 +305,8 @@ async function prepareHome(dataDir: string): Promise<{ home: string; state: Prox
     config.auth = { ...auth, apiKeys: [state.apiKey], adminApiKey: state.adminKey };
     await writeFile(configFile, JSON.stringify(config, null, 2), { mode: 0o600 });
   }
+  // a running copilot-api still takes the old key; the next request starts it again
+  if (rotated && (await stopProxy(dataDir))) await waitForPortFree(state.port);
   return { home, state };
 }
 

@@ -43,9 +43,14 @@ The **Copilot usage** page: copilot-api's token usage dashboard inside bb.
   generated gateway key (`auth.apiKeys`). A machine-wide copilot-api install,
   its `~/.local/share/copilot-api` state and port 4141 are not used.
 - **Thread environment.** `bb.providers.experimental_contributeEnv` gives only
-  this provider `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, the Copilot model
-  ids, `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`, the `DISABLE_*` flags and
-  plain `claude` as `BB_CLAUDE_CODE_EXECUTABLE`.
+  this provider `ANTHROPIC_BASE_URL`, the Copilot model ids,
+  `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`, the `DISABLE_*` flags and plain
+  `claude` as `BB_CLAUDE_CODE_EXECUTABLE`. The gateway key is not among them:
+  bb records contributed values in each thread's events, so the provider
+  bridge adds `ANTHROPIC_AUTH_TOKEN` on the host instead, from copilot-api's
+  state file, and only for requests whose `ANTHROPIC_BASE_URL` is the plugin's
+  copilot-api (`gateway-key.ts`). Keys made by 0.1.0, which passed it through
+  bb, are replaced once.
   `experimental_contributeEnvHealth` reports the provider healthy while the
   proxy runs, so no claude.ai login is needed.
 - **Model catalog.** The bridge's model catalog is adjusted on its way to
