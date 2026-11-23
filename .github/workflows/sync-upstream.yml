@@ -21,7 +21,7 @@ jobs:
   sync:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Find the bb release to sync to
         id: target
@@ -48,7 +48,7 @@ jobs:
             echo "changed=true" >>"$GITHUB_OUTPUT"
           fi
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         if: steps.diff.outputs.changed == 'true'
         with:
           node-version: 22
@@ -58,7 +58,7 @@ jobs:
         if: steps.diff.outputs.changed == 'true'
         continue-on-error: true
         run: |
-          npm ci --omit=optional
+          npm ci
           npm run typecheck
           npm test
 
