@@ -23,6 +23,7 @@
   "include": [
     "server.ts",
     "host.ts",
+    "instances.ts",
     "gateway-key.ts",
     "host-contract.ts",
     "app.tsx",

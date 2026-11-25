@@ -27,7 +27,7 @@ import type {
   SettingValue,
 } from "./contract";
 import { CLAUDE_MARK, COPILOT_PATHS } from "./icon-paths";
-import { MESSAGE_FETCH, MESSAGE_RESPONSE, VIRTUAL } from "./dashboard";
+import { MESSAGE_FETCH, MESSAGE_RESPONSE, parseVirtualPath, virtualEndpoint } from "./dashboard";
 import { SessionCreditsAction, SessionCreditsCompact } from "./session-credits";
 
 const PROVIDER_ID = "claude-copilot";
@@ -583,9 +583,10 @@ function UsagePage() {
     async function onMessage(event: MessageEvent) {
       const target = frame.current?.contentWindow;
       if (!target || event.source !== target || !isFetchRequest(event.data)) return;
-      const { id, path } = event.data;
+      const { id, path: rawPath } = event.data;
+      const { instance, path } = parseVirtualPath(rawPath, selectedRef.current);
       try {
-        const query = new URLSearchParams({ path, instance: selectedRef.current });
+        const query = new URLSearchParams({ path, instance });
         const res = await fetch(`${BASE}/proxy?${query}`);
         target.postMessage(
           {
@@ -605,7 +606,7 @@ function UsagePage() {
     return () => window.removeEventListener("message", onMessage);
   }, []);
 
-  const endpoint = `${window.location.origin}${VIRTUAL}/usage`;
+  const endpoint = virtualEndpoint(window.location.origin, selected);
   const src = `${BASE}/viewer?${new URLSearchParams({ endpoint, period: "this_month" })}`;
   return (
     <div className="flex h-full w-full flex-col">
@@ -617,14 +618,22 @@ function UsagePage() {
               type="button"
               role="tab"
               aria-selected={instance.id === selected}
-              title={instance.home || undefined}
+              title={
+                instance.home
+                  ? instance.own
+                    ? instance.home
+                    : `${instance.home} (${instance.port ? `running on :${instance.port}` : "stopped — reading saved usage database"})`
+                  : undefined
+              }
               className={`whitespace-nowrap rounded-md px-3 py-1 text-sm ${
                 instance.id === selected ? "bg-accent text-accent-foreground" : "text-muted-foreground hover:bg-accent/50"
               }`}
               onClick={() => setSelected(instance.id)}
             >
               {instance.label}
-              {!instance.own && instance.port ? <span className="text-muted-foreground"> :{instance.port}</span> : null}
+              {!instance.own ? (
+                <span className="text-muted-foreground">{instance.port ? ` :${instance.port}` : " (stopped)"}</span>
+              ) : null}
             </button>
           ))}
         </div>

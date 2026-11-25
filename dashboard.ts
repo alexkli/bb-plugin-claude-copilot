@@ -14,6 +14,30 @@ export const MESSAGE_RESPONSE = "claude-copilot:response";
 /** Upstream API paths the dashboard may read (GET only). */
 export const DASHBOARD_PATHS = /^\/(usage|token-usage|models)(\/[A-Za-z0-9_-][A-Za-z0-9_.-]*)*$/;
 
+const INSTANCE_PREFIX = /^\/([A-Za-z0-9_-]+)(\/.*)$/;
+
+/** Virtual endpoint URL shown in the dashboard for a specific instance tab. */
+export function virtualEndpoint(origin: string, instanceId: string): string {
+  return `${origin}${VIRTUAL}/${encodeURIComponent(instanceId)}/usage`;
+}
+
+/**
+ * Split a virtual fetch path (after stripping VIRTUAL) into its instance id
+ * and upstream API path. Supports `/<instance>/<api-path>` and the legacy
+ * `/<api-path>` shape (which falls back to `fallbackInstance`).
+ */
+export function parseVirtualPath(rawPath: string, fallbackInstance: string): { instance: string; path: string } {
+  const qIndex = rawPath.indexOf("?");
+  const pathname = qIndex === -1 ? rawPath : rawPath.slice(0, qIndex);
+  const search = qIndex === -1 ? "" : rawPath.slice(qIndex);
+  if (DASHBOARD_PATHS.test(pathname)) return { instance: fallbackInstance, path: rawPath };
+  const match = INSTANCE_PREFIX.exec(pathname);
+  if (match?.[1] && match[2] && DASHBOARD_PATHS.test(match[2])) {
+    return { instance: match[1], path: `${match[2]}${search}` };
+  }
+  return { instance: fallbackInstance, path: rawPath };
+}
+
 export const SHIM = `<script>(() => {
   const V = ${JSON.stringify(VIRTUAL)};
   const pending = new Map();

@@ -9,7 +9,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { appendFile, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { homedir } from "node:os";
 import { delimiter, dirname, join, sep } from "node:path";
@@ -24,6 +24,7 @@ import {
 } from "@get-bb/plugin-sdk/provider-bridge";
 import upstreamHost, { experimental_providerBridge as upstreamBridge } from "./vendor/provider-claude-code/src/host";
 import { addGatewayKey, readGateway, withGatewayKey } from "./gateway-key.js";
+import { extractPsEnvTail, parseCopilotApiProcess, parsePsPidLines, snapshotDatabase, type RunningCopilotApi } from "./instances.js";
 import {
   catalogFileSchema,
   copilotModelSchema,
@@ -609,35 +610,51 @@ function instanceId(home: string): string {
   return createHash("sha256").update(home).digest("hex").slice(0, 12);
 }
 
+function runPs(args: string[]): Promise<string> {
+  return new Promise<string>((resolve) => {
+    const ps = spawn("ps", args, { stdio: ["ignore", "pipe", "ignore"] });
+    let text = "";
+    ps.stdout.on("data", (chunk: Buffer) => (text += chunk.toString()));
+    ps.on("close", () => resolve(text));
+    ps.on("error", () => resolve(""));
+  });
+}
+
 /** Running `copilot-api start` processes: their home and port. */
-async function runningCopilotApis(): Promise<{ home: string; port: number | null }[]> {
-  const found: { home: string; port: number | null }[] = [];
-  const parse = (args: string, env: string) => {
-    if (!/copilot-api/.test(args) || !/\sstart(\s|$)/.test(args)) return;
-    const apiHome = /--api-home[= ](\S+)/.exec(args)?.[1] ?? /(?:^|\s)COPILOT_API_HOME=(\S+)/.exec(env)?.[1] ?? defaultHome();
-    const port = Number(/(?:--port|-p)[= ](\d+)/.exec(args)?.[1] ?? "4141");
-    found.push({ home: apiHome, port: Number.isFinite(port) ? port : null });
-  };
+async function runningCopilotApis(): Promise<RunningCopilotApi[]> {
+  const found: RunningCopilotApi[] = [];
+  const fallback = defaultHome();
   try {
     if (process.platform === "linux") {
       for (const pid of readdirSync("/proc").filter((p) => /^\d+$/.test(p))) {
         try {
-          const args = readFileSync(`/proc/${pid}/cmdline`, "utf8").replaceAll("\0", " ");
+          const args = readFileSync(`/proc/${pid}/cmdline`, "utf8").replaceAll("\0", " ").trim();
           if (!args.includes("copilot-api")) continue;
-          parse(args, readFileSync(`/proc/${pid}/environ`, "utf8").replaceAll("\0", " "));
+          const env = readFileSync(`/proc/${pid}/environ`, "utf8");
+          const parsed = parseCopilotApiProcess(args, env, fallback);
+          if (parsed) found.push(parsed);
         } catch {
           // process gone or not ours
         }
       }
     } else if (process.platform !== "win32") {
-      const out = await new Promise<string>((resolve) => {
-        const ps = spawn("ps", ["-axwwE", "-o", "command="], { stdio: ["ignore", "pipe", "ignore"] });
-        let text = "";
-        ps.stdout.on("data", (chunk: Buffer) => (text += chunk.toString()));
-        ps.on("close", () => resolve(text));
-        ps.on("error", () => resolve(""));
-      });
-      for (const line of out.split("\n")) if (line.includes("copilot-api")) parse(line, line);
+      // Read command lines without environment first so env vars cannot cause
+      // false matches or shadow --port/-p; then fetch env only for matching pids.
+      const byPid = parsePsPidLines(await runPs(["-axww", "-o", "pid=,command="]));
+      const matchingPids: number[] = [];
+      for (const [pid, args] of byPid) {
+        if (parseCopilotApiProcess(args, "", fallback)) matchingPids.push(pid);
+      }
+      if (matchingPids.length > 0) {
+        const withEnvByPid = parsePsPidLines(await runPs(["-wwE", "-p", matchingPids.join(","), "-o", "pid=,command="]));
+        for (const pid of matchingPids) {
+          const args = byPid.get(pid);
+          if (!args) continue;
+          const envTail = extractPsEnvTail(args, withEnvByPid.get(pid) ?? args);
+          const parsed = parseCopilotApiProcess(args, envTail, fallback);
+          if (parsed) found.push(parsed);
+        }
+      }
     }
   } catch {
     // discovery is best effort
@@ -667,35 +684,6 @@ async function listInstances(dataDir: string): Promise<Instance[]> {
 
 const TOKEN_USAGE_PATH = /^\/token-usage(\/(daily|events|sessions))?(\?[A-Za-z0-9_=&%.-]*)?$/;
 const SNAPSHOT_MAX_AGE_MS = 30_000;
-const snapshotJobs = new Map<string, Promise<string>>();
-
-/** A consistent, read-only copy of another instance's usage database. */
-async function snapshot(dataDir: string, id: string, home: string): Promise<string> {
-  const dir = join(dataDir, "snapshots");
-  const target = join(dir, `${id}.sqlite`);
-  if (existsSync(target) && Date.now() - statSync(target).mtimeMs < SNAPSHOT_MAX_AGE_MS) return target;
-  const running = snapshotJobs.get(id);
-  if (running) return await running;
-  const job = (async () => {
-    await mkdir(dir, { recursive: true });
-    const temp = join(dir, `${id}.${process.pid}.${Date.now()}.tmp`);
-    const { DatabaseSync } = (await import("node:sqlite")) as typeof import("node:sqlite");
-    const db = new DatabaseSync(join(home, DB_FILE), { readOnly: true });
-    try {
-      db.exec(`VACUUM INTO '${temp.replaceAll("'", "''")}'`);
-    } finally {
-      db.close();
-    }
-    await rename(temp, target);
-    return target;
-  })();
-  snapshotJobs.set(id, job);
-  try {
-    return await job;
-  } finally {
-    snapshotJobs.delete(id);
-  }
-}
 
 /** /token-usage for another instance, answered by copilot-api's own code over a snapshot. */
 async function instanceUsage(pluginDir: string, id: string, path: string, context: ExperimentalHostRpcContext): Promise<ApiResponse> {
@@ -704,18 +692,22 @@ async function instanceUsage(pluginDir: string, id: string, path: string, contex
   const dataDir = context.experimental_paths.dataDir;
   const instance = (await listInstances(dataDir)).find((i) => i.id === id && !i.own);
   if (!instance) return json(404, { error: "Unknown copilot-api instance" });
-  let db: string;
-  try {
-    db = await snapshot(dataDir, instance.id, instance.home);
-  } catch (error) {
-    return json(502, { error: `Could not read ${instance.home}: ${String(error)}` });
-  }
   const readerHome = join(dataDir, "reader-home");
   await mkdir(readerHome, { recursive: true });
-  // copilot-api's store opens the database read-write (migrations, pragmas),
-  // so concurrent readers on one snapshot fail with "database is locked".
+  // Serialize snapshot refresh and reader execution per instance: copilot-api's
+  // store opens the database read-write (WAL/migrations), so concurrent readers
+  // fail with "database is locked" and replacing the snapshot mid-read would
+  // race with its -wal/-shm sidecar files.
   const previous = readerQueues.get(instance.id) ?? Promise.resolve();
-  const result = previous.then(() => runReader(pluginDir, path, readerHome, db));
+  const result = previous.then(async (): Promise<ApiResponse> => {
+    let db: string;
+    try {
+      db = await snapshotDatabase(join(instance.home, DB_FILE), join(dataDir, "snapshots", `${instance.id}.sqlite`), SNAPSHOT_MAX_AGE_MS);
+    } catch (error) {
+      return json(502, { error: `Could not read ${instance.home}: ${String(error)}` });
+    }
+    return await runReader(pluginDir, path, readerHome, db);
+  });
   const tail = result.then(() => undefined);
   readerQueues.set(instance.id, tail);
   void tail.then(() => {

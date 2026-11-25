@@ -1,6 +1,6 @@
 {
   "name": "bb-plugin-claude-copilot",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Run threads with the Claude Code harness on your GitHub Copilot subscription, including any model Copilot offers.",
   "keywords": [
     "bb-plugin",
