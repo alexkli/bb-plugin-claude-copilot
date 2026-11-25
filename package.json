@@ -1,7 +1,7 @@
 {
   "name": "bb-plugin-claude-copilot",
-  "version": "0.1.3",
-  "description": "Run Claude Code threads on your GitHub Copilot subscription, including the GPT, Gemini and Grok models Copilot offers.",
+  "version": "1.0.0",
+  "description": "Run threads with the Claude Code harness on your GitHub Copilot subscription, including any model Copilot offers.",
   "keywords": [
     "bb-plugin",
     "claude-code",
@@ -23,7 +23,7 @@
   },
   "bb": {
     "name": "Claude Copilot provider",
-    "description": "Run Claude Code threads on your GitHub Copilot subscription, including the GPT, Gemini and Grok models Copilot offers.",
+    "description": "Run threads with the Claude Code harness on your GitHub Copilot subscription, including any model Copilot offers.",
     "branding": {
       "icon": "./icons/claude-copilot.svg"
     },

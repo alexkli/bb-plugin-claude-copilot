@@ -556,10 +556,13 @@ async function applyPermissionSettings(
       ? params.additionalWorkspaceWriteRoots
       : [];
   const sandboxEnabled = params.sandboxEnabled ?? construction.sandboxEnabled;
+  const promptOnSandboxEscape =
+    params.promptOnSandboxEscape ?? construction.promptOnSandboxEscape ?? false;
   if (
     attachment.approvedPlanPermissionMode === params.permissionMode &&
     construction.permissionScope === params.permissionScope &&
     construction.sandboxEnabled === sandboxEnabled &&
+    (construction.promptOnSandboxEscape ?? false) === promptOnSandboxEscape &&
     isDeepStrictEqual(
       construction.additionalWorkspaceWriteRoots ?? [],
       writeRoots,
@@ -575,6 +578,7 @@ async function applyPermissionSettings(
     permissionScope: params.permissionScope,
     additionalWorkspaceWriteRoots: writeRoots,
     sandboxEnabled,
+    promptOnSandboxEscape,
   };
   const rebuilt = buildSessionOptions(
     {
@@ -584,10 +588,20 @@ async function applyPermissionSettings(
     },
     attachment.sessionOptions.env ?? {},
   );
+  const hadSandboxEscapeAsk =
+    (construction.promptOnSandboxEscape ?? false) &&
+    construction.sandboxEnabled;
+  const wantSandboxEscapeAsk =
+    promptOnSandboxEscape && rebuilt.sandbox?.enabled === true;
   const permissionSettings = {
     sandbox: rebuilt.sandbox ?? { enabled: false },
     permissions: {
       additionalDirectories: [...(rebuilt.additionalDirectories ?? [])],
+      ...(wantSandboxEscapeAsk
+        ? { ask: ["Bash(dangerouslyDisableSandbox:true)"] }
+        : hadSandboxEscapeAsk
+          ? { ask: [] }
+          : {}),
     },
   };
   attachment.sessionPermissionGrants = [];
@@ -1081,6 +1095,7 @@ function toSessionConstructionConfig(
       permissionScope: params.permissionScope,
       plugins: params.plugins,
       sandboxEnabled: params.sandboxEnabled,
+      promptOnSandboxEscape: params.promptOnSandboxEscape ?? false,
     },
   };
 }

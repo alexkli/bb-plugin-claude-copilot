@@ -87,7 +87,14 @@ function rewriteDeclaration(declaration: ProviderDeclaration, settings: Settings
       ),
     },
     // Upstream reads its settings only here; give it the plugin-kept values.
-    ...(derive ? { deriveProviderOptions: (ctx: DeriveContext) => derive({ ...ctx, settings: { ...ctx.settings, ...settings.claudeValues() } }) } : {}),
+    ...(derive
+      ? {
+          deriveProviderOptions: (ctx: DeriveContext) => ({
+            ...(derive({ ...ctx, settings: { ...ctx.settings, ...settings.claudeValues() } }) as Record<string, unknown>),
+            promptOnSandboxEscape: settings.copilot().promptOnSandboxEscape,
+          }),
+        }
+      : {}),
   } as unknown as ProviderDeclaration;
 }
 
@@ -265,7 +272,10 @@ export default async function plugin(bb: BbPluginApi) {
   registerWrappedProvider(bb, settings);
   const host = bb.hosts.experimental_client({ contract: hostContract });
 
+  let lastActive = Date.now();
+
   const ensure = async (hostId: string): Promise<ProxyStatus> => {
+    lastActive = Date.now();
     const s = settings.copilot();
     return host.call(
       "ensureProxy",
@@ -571,7 +581,6 @@ export default async function plugin(bb: BbPluginApi) {
 
   bb.background.service("idle-stop", {
     async start(signal) {
-      let lastActive = Date.now();
       while (!signal.aborted) {
         await new Promise<void>((resolve) => {
           const timer = setTimeout(resolve, 60_000);
@@ -595,6 +604,7 @@ export default async function plugin(bb: BbPluginApi) {
           const status = await host.call("proxyStatus", {}, { hostId });
           if (status.running) {
             await host.call("stopProxy", {}, { hostId });
+            lastActive = Date.now();
             bb.log.info(`stopped copilot-api after ${idleStopMinutes} idle minutes`);
           }
         } catch (error) {

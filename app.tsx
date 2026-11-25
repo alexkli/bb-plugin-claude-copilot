@@ -16,7 +16,6 @@ import {
 } from "@get-bb/plugin-sdk/app";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { REASONING_LEVELS, type ReasoningLevel } from "./reasoning";
 import type {
   AppStatus,
   appContract,
@@ -118,10 +117,52 @@ function Field({ label, description, children }: { label: string; description?: 
 function Section({ title, description, children }: { title: string; description?: ReactNode; children: ReactNode }) {
   return (
     <section className="flex flex-col gap-2">
-      <h3 className="text-sm font-medium">{title}</h3>
-      {description ? <p className="text-sm text-muted-foreground">{description}</p> : null}
-      {children}
+      <div className="flex flex-col gap-0.5">
+        <h3 className="text-sm font-medium">{title}</h3>
+        {description ? <p className="text-xs text-muted-foreground">{description}</p> : null}
+      </div>
+      <div className="flex flex-col gap-4 rounded-xl border bg-card p-5">{children}</div>
     </section>
+  );
+}
+
+function ToggleRow({
+  label,
+  description,
+  checked,
+  disabled,
+  onChange,
+}: {
+  label: string;
+  description?: ReactNode;
+  checked: boolean;
+  disabled: boolean;
+  onChange: (checked: boolean) => void;
+}) {
+  return (
+    <div className="flex items-start justify-between gap-4">
+      <div className="flex flex-col gap-0.5 text-sm">
+        <span className="font-medium leading-snug">{label}</span>
+        {description ? <span className="text-xs leading-relaxed text-muted-foreground">{description}</span> : null}
+      </div>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={checked}
+        aria-label={label}
+        disabled={disabled}
+        onClick={() => onChange(!checked)}
+        className={`relative mt-0.5 inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 ${
+          checked ? "bg-foreground" : "bg-muted-foreground/30"
+        }`}
+      >
+        <span
+          className={`pointer-events-none block h-4 w-4 rounded-full bg-background shadow-sm transition-transform ${
+            checked ? "translate-x-4" : "translate-x-0"
+          }`}
+        />
+      </button>
+    </div>
   );
 }
 
@@ -214,19 +255,13 @@ function ClaudeField({
 }) {
   if (field.type === "boolean") {
     return (
-      <label className="flex items-start gap-2 py-1.5 text-sm">
-        <input
-          type="checkbox"
-          className="mt-0.5"
-          checked={value === true}
-          disabled={disabled}
-          onChange={(e) => onChange(e.target.checked)}
-        />
-        <span className="flex flex-col gap-0.5">
-          <span className="font-medium">{field.label}</span>
-          {field.description ? <span className="text-xs text-muted-foreground">{field.description}</span> : null}
-        </span>
-      </label>
+      <ToggleRow
+        label={field.label}
+        description={field.description}
+        checked={value === true}
+        disabled={disabled}
+        onChange={onChange}
+      />
     );
   }
   return (
@@ -412,62 +447,41 @@ function SettingsSection() {
           </Button>
         </div>
         {error ? <p className="text-sm text-destructive">{error}</p> : null}
-      </Section>
 
-      <Section
-        title="Models"
-        description={
-          models.length === 0
-            ? "The model list loads from Copilot once copilot-api has run; until then only the current values are shown."
-            : "Copilot's chat models. Non-Anthropic models run through copilot-api's Messages translation."
-        }
-      >
-        {copilot ? (
-          <div className="flex flex-col">
-            <Field label="Default model" description="Preselected for new Claude Code (Copilot) threads.">
-              <ModelSelect value={copilot.defaultModel} models={models} disabled={settingsDisabled} onChange={(v) => setCopilot({ defaultModel: v })} />
-            </Field>
-            <Field label="Default reasoning" description="Preselected reasoning effort, where the model supports it.">
-              <select
-                className={SELECT_CLASS}
-                value={copilot.defaultReasoning}
-                disabled={settingsDisabled}
-                onChange={(e) => setCopilot({ defaultReasoning: e.target.value as ReasoningLevel })}
-              >
-                {REASONING_LEVELS.map((level) => (
-                  <option key={level} value={level}>
-                    {level}
-                  </option>
-                ))}
-              </select>
-            </Field>
-            <Field label="Opus model" description="What Claude Code's opus alias resolves to.">
-              <ModelSelect value={copilot.opusModel} models={models} disabled={settingsDisabled} onChange={(v) => setCopilot({ opusModel: v })} />
-            </Field>
-            <Field label="Sonnet model" description="What Claude Code's sonnet alias resolves to.">
-              <ModelSelect value={copilot.sonnetModel} models={models} disabled={settingsDisabled} onChange={(v) => setCopilot({ sonnetModel: v })} />
-            </Field>
-            <Field label="Haiku model" description="Used by Claude Code for background tasks such as titles and summaries.">
-              <ModelSelect value={copilot.haikuModel} models={models} disabled={settingsDisabled} onChange={(v) => setCopilot({ haikuModel: v })} />
-            </Field>
-            <Field label="Stop copilot-api when idle (minutes)" description="0 keeps it running. The next turn starts it again.">
-              <CommitInput
-                type="number"
-                value={String(copilot.idleStopMinutes)}
-                disabled={settingsDisabled}
-                onCommit={(v) => setCopilot({ idleStopMinutes: Math.max(0, Math.round(Number(v) || 0)) })}
-              />
-            </Field>
+        <details className="group border-t pt-3">
+          <summary className="cursor-pointer select-none rounded-sm text-sm font-medium text-muted-foreground hover:text-foreground focus:outline-none focus-visible:ring-1 focus-visible:ring-ring">
+            Advanced: copilot-api config.json
+          </summary>
+          <div className="mt-3 flex flex-col gap-3">
+            <p className="text-xs text-muted-foreground">
+              Options for the embedded copilot-api, such as model mappings and reasoning efforts; see the copilot-api README. The gateway keys are managed by the plugin and not shown. Saving reloads a running copilot-api.
+            </p>
+            <textarea
+              className="min-h-64 w-full rounded-md border bg-transparent p-3 font-mono text-xs"
+              spellCheck={false}
+              value={config ?? ""}
+              disabled={config === null}
+              onChange={(event) => {
+                setConfig(event.target.value);
+                setConfigMessage(null);
+              }}
+            />
+            <div className="flex flex-wrap items-center gap-3">
+              <Button size="sm" disabled={config === null || busy !== null} onClick={saveConfig}>
+                {busy === "config" ? "Saving…" : "Save"}
+              </Button>
+              <Button size="sm" variant="ghost" disabled={busy !== null} onClick={loadConfig}>
+                Revert
+              </Button>
+              {configMessage ? <span className="text-sm text-muted-foreground">{configMessage}</span> : null}
+            </div>
           </div>
-        ) : settingsError ? null : (
-          <p className="text-sm text-muted-foreground">Loading…</p>
-        )}
-        {settingsError ? <p className="text-sm text-destructive">{settingsError}</p> : null}
+        </details>
       </Section>
 
       {settings && settings.claudeFields.length > 0 ? (
-        <Section title="Claude Code" description="bb's Claude Code options, for this provider only. Changes apply to new turns.">
-          <div className="flex flex-col">
+        <Section title="Claude Code" description="Standard bb Claude Code provider options, for this provider only. Changes apply to new turns.">
+          <div className="flex flex-col gap-5">
             {settings.claudeFields.map((field) => (
               <ClaudeField
                 key={field.key}
@@ -481,29 +495,46 @@ function SettingsSection() {
         </Section>
       ) : null}
 
+      {copilot ? (
+        <Section title="Additional options">
+          <ToggleRow
+            label="Prompt on sandbox escape"
+            description={
+              <>
+                Pass <code>Bash(dangerouslyDisableSandbox:true)</code> as an ask rule when the Claude Code sandbox is active, so Approve for me mode asks for confirmation instead of letting the auto-mode classifier approve unsandboxed retries.
+              </>
+            }
+            checked={copilot.promptOnSandboxEscape === true}
+            disabled={settingsDisabled}
+            onChange={(checked) => setCopilot({ promptOnSandboxEscape: checked })}
+          />
+        </Section>
+      ) : null}
+
       <Section
-        title="copilot-api config.json"
-        description="Options for the embedded copilot-api, such as model mappings and reasoning efforts; see the copilot-api README. The gateway keys are managed by the plugin and not shown. Saving reloads a running copilot-api."
+        title="Models"
+        description={
+          models.length === 0
+            ? "The model list loads from Copilot once copilot-api has run; until then only the current values are shown."
+            : "Copilot's chat models for Claude Code's model aliases. Non-Anthropic models run through copilot-api's Messages translation."
+        }
       >
-        <textarea
-          className="min-h-64 w-full rounded-md border bg-transparent p-3 font-mono text-xs"
-          spellCheck={false}
-          value={config ?? ""}
-          disabled={config === null}
-          onChange={(event) => {
-            setConfig(event.target.value);
-            setConfigMessage(null);
-          }}
-        />
-        <div className="flex flex-wrap items-center gap-3">
-          <Button size="sm" disabled={config === null || busy !== null} onClick={saveConfig}>
-            {busy === "config" ? "Saving…" : "Save"}
-          </Button>
-          <Button size="sm" variant="ghost" disabled={busy !== null} onClick={loadConfig}>
-            Revert
-          </Button>
-          {configMessage ? <span className="text-sm text-muted-foreground">{configMessage}</span> : null}
-        </div>
+        {copilot ? (
+          <div className="flex flex-col gap-2">
+            <Field label="Opus model" description="What Claude Code's opus alias resolves to.">
+              <ModelSelect value={copilot.opusModel} models={models} disabled={settingsDisabled} onChange={(v) => setCopilot({ opusModel: v })} />
+            </Field>
+            <Field label="Sonnet model" description="What Claude Code's sonnet alias resolves to.">
+              <ModelSelect value={copilot.sonnetModel} models={models} disabled={settingsDisabled} onChange={(v) => setCopilot({ sonnetModel: v })} />
+            </Field>
+            <Field label="Haiku model" description="Used by Claude Code for background tasks such as titles and summaries.">
+              <ModelSelect value={copilot.haikuModel} models={models} disabled={settingsDisabled} onChange={(v) => setCopilot({ haikuModel: v })} />
+            </Field>
+          </div>
+        ) : settingsError ? null : (
+          <p className="text-sm text-muted-foreground">Loading…</p>
+        )}
+        {settingsError ? <p className="text-sm text-destructive">{settingsError}</p> : null}
       </Section>
     </div>
   );
@@ -626,8 +657,6 @@ export default definePluginApp((app) => {
   app.experimental_icons.register({ name: COPILOT_ICON, component: CopilotIcon });
   app.slots.settingsSection({
     id: "copilot",
-    title: "Claude Code (Copilot)",
-    description: "GitHub sign-in, models and the embedded copilot-api used by the Claude Code (Copilot) provider.",
     component: SettingsSection,
   });
   app.slots.navPanel({

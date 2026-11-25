@@ -31,6 +31,7 @@ export interface BuildSessionOptionsArgs {
   disable1MContext: boolean;
   artifactsEnabled: boolean;
   sandboxEnabled: boolean;
+  promptOnSandboxEscape?: boolean;
   memoryEnabled?: boolean;
 }
 
@@ -80,11 +81,15 @@ export function toSdkEffort(
 }
 
 function buildFlagSettings(params: BuildSessionOptionsArgs): Settings {
+  const sandbox = buildWorkspaceWriteSandbox(params);
   return {
     autoMemoryEnabled: params.memoryEnabled ?? true,
     enableWorkflows: params.workflowsEnabled,
     ultracode: params.reasoningLevel === "ultracode",
     fastMode: params.serviceTier === "fast",
+    ...(params.promptOnSandboxEscape && sandbox?.enabled
+      ? { permissions: { ask: ["Bash(dangerouslyDisableSandbox:true)"] } }
+      : {}),
   };
 }
 

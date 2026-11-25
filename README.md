@@ -5,8 +5,6 @@ GitHub Copilot through an embedded
 [copilot-api](https://github.com/caozhiyuan/copilot-api). It sits next to bb's
 normal Claude Code provider, which keeps using your Anthropic login.
 
-Status: prototype.
-
 ## Screenshots
 
 **Claude Code (Copilot)** in the model picker, with GPT, Gemini and other
@@ -64,9 +62,15 @@ The **Copilot usage** page: copilot-api's token usage dashboard inside bb.
   `[1m]` tells Claude Code the window is large; `CLAUDE_CODE_AUTO_COMPACT_WINDOW`
   is set to the smallest input limit among those models so it compacts
   before Copilot rejects a request.
-- **Idle stop.** copilot-api stops when no Claude Code (Copilot) thread has
-  been running for the configured minutes (default 30); the next turn starts
-  it again through the env resolver.
+- **Idle stop.** copilot-api stops after 30 idle minutes with no Claude Code
+  (Copilot) activity; the next turn starts it again through the env resolver.
+- **Prompt on sandbox escape.** Optional setting (off by default) that passes
+  `permissions.ask: ["Bash(dangerouslyDisableSandbox:true)"]` via SDK flag
+  settings when the Claude Code sandbox is active, so Approve for me mode
+  prompts you instead of letting Claude Code's auto-mode classifier approve
+  unsandboxed retries. Plumbed through `vendor/provider-claude-code`
+  (`session-params.ts`, `bridge/commands.ts`, `bridge/session-options.ts`,
+  `bridge/bridge.ts`).
 - **Plan mode** and the rest of Claude Code's bb features come from the
   vendored declaration and bridge.
 - **Icon.** The Claude mark and the GitHub Copilot glyph at equal size on a
@@ -77,14 +81,15 @@ The **Copilot usage** page: copilot-api's token usage dashboard inside bb.
 
 ## In bb
 
-- **Settings → Claude Copilot**: one section, owned by the plugin (not bb's
-  declarative form) so it can be ordered and use live data: GitHub sign-in
-  (device code), account and copilot-api state (start / stop / restart);
-  model dropdowns from Copilot's model list (default model, default
-  reasoning, Opus / Sonnet / Haiku mapping) and idle-stop minutes; bb's
-  Claude Code options for this provider, rendered from the vendored
-  provider's own setting descriptors; copilot-api's `config.json` (saving reloads it; the
-  plugin-managed gateway keys are hidden and preserved).
+- **Settings → Claude Copilot**: owned by the plugin (not bb's declarative
+  form) so it can be ordered and use live data, grouped into four boxes:
+  **GitHub Copilot** (device-code sign-in, account and copilot-api start /
+  stop / restart, plus a collapsed-by-default `copilot-api config.json` editor
+  where plugin-managed gateway keys are hidden and preserved); **Claude Code**
+  (bb's standard Claude Code options for this provider, rendered from the
+  vendored provider's own setting descriptors); **Additional options**
+  (`Prompt on sandbox escape`); and **Models** (Opus / Sonnet / Haiku alias
+  dropdowns from Copilot's live model list).
 - **Copilot usage** page and sidebar-footer button: copilot-api's usage
   dashboard in a sandboxed iframe whose data requests go through the plugin
   (`/viewer`, `/proxy` routes -> host entry), so it works from bb on a phone

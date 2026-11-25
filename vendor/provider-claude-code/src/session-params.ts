@@ -78,6 +78,7 @@ export type ClaudeSessionExecutionOptions = RuntimePermissionPolicy & {
   disable1MContext: boolean;
   artifactsEnabled: boolean;
   sandboxEnabled: boolean;
+  promptOnSandboxEscape?: boolean | undefined;
   fullAccessApprovalsEnabled: boolean;
   commandDescriptionsEnabled: boolean;
   memoryEnabled?: boolean | undefined;
@@ -142,6 +143,9 @@ function buildInternalSessionParams(
     disable1MContext: args.options.disable1MContext,
     artifactsEnabled: args.options.artifactsEnabled,
     sandboxEnabled: args.options.sandboxEnabled,
+    ...(args.options.promptOnSandboxEscape !== undefined
+      ? { promptOnSandboxEscape: args.options.promptOnSandboxEscape }
+      : {}),
     fullAccessApprovalsEnabled: args.options.fullAccessApprovalsEnabled,
     commandDescriptionsEnabled: args.options.commandDescriptionsEnabled,
     memoryEnabled: args.options.memoryEnabled,
@@ -158,6 +162,7 @@ const claudeProviderOptionsSchema = z
     disable1MContext: z.boolean().optional(),
     artifactsEnabled: z.boolean().optional(),
     sandboxEnabled: z.boolean().optional(),
+    promptOnSandboxEscape: z.boolean().optional(),
     fullAccessApprovalsEnabled: z.boolean().optional(),
     commandDescriptionsEnabled: z.boolean().optional(),
     memoryEnabled: z.boolean().optional(),
@@ -207,6 +212,7 @@ export function buildClaudeSessionParams(
       disable1MContext: providerOptions.disable1MContext ?? false,
       artifactsEnabled: providerOptions.artifactsEnabled ?? false,
       sandboxEnabled: providerOptions.sandboxEnabled ?? true,
+      promptOnSandboxEscape: providerOptions.promptOnSandboxEscape ?? false,
       fullAccessApprovalsEnabled:
         providerOptions.fullAccessApprovalsEnabled ?? false,
       commandDescriptionsEnabled:
@@ -267,6 +273,9 @@ export function buildClaudeTurnParams(
     disable1MContext: providerOptions.disable1MContext,
     artifactsEnabled: providerOptions.artifactsEnabled,
     sandboxEnabled: providerOptions.sandboxEnabled,
+    ...(providerOptions.promptOnSandboxEscape !== undefined
+      ? { promptOnSandboxEscape: providerOptions.promptOnSandboxEscape }
+      : {}),
     fullAccessApprovalsEnabled: providerOptions.fullAccessApprovalsEnabled,
     commandDescriptionsEnabled: providerOptions.commandDescriptionsEnabled,
     memoryEnabled: providerOptions.memoryEnabled,

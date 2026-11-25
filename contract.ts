@@ -132,6 +132,7 @@ export const copilotSettingsSchema = z
     sonnetModel: z.string().trim().min(1).max(300),
     haikuModel: z.string().trim().min(1).max(300),
     idleStopMinutes: z.number().int().min(0).max(24 * 60),
+    promptOnSandboxEscape: z.boolean(),
   })
   .strict();
 export type CopilotSettings = z.infer<typeof copilotSettingsSchema>;

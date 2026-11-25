@@ -23,6 +23,7 @@ export const COPILOT_DEFAULTS: CopilotSettings = {
   sonnetModel: "claude-sonnet-5-5",
   haikuModel: "claude-haiku-5-5",
   idleStopMinutes: 30,
+  promptOnSandboxEscape: false,
 };
 
 const STORAGE_KEY = "settings.v1";
